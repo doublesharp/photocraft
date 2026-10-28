@@ -12,6 +12,8 @@ workspace = true
 corpus = []
 # Embedded native Rust CPU inference; optional weights are managed separately.
 native-inference = ["photocraft-ml/native-inference"]
+osor = ["photocraft-ml/osor"]
+osor-metal = ["osor", "photocraft-ml/osor-metal"]
 
 [dependencies]
 photocraft-geom = { workspace = true }

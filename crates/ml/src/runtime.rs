@@ -101,5 +101,5 @@ pub(crate) fn infer(model: &ModelSpec, cached: &Cached, input: &RemovalInput, ct
     ctl.progress(0.92, "Restoring crop detail");
     let rgb = geometry.restore(&planar)?;
     check(ctl)?;
-    Ok(RemovalOutput { rgb, inference_scale: geometry.scale, load_ms: 0., forward_ms })
+    Ok(RemovalOutput { edit_alpha: None, rgb, inference_scale: geometry.scale, load_ms: 0., forward_ms })
 }

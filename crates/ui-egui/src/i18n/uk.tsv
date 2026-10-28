@@ -4229,3 +4229,11 @@ curves	Smooth	Згладити
 	Settings take effect immediately.	Налаштування застосовуються одразу.
 	Local background reconstruction; 512 px context, CPU processing	Локальне відновлення тла; контекст 512 пікс., обробка на CPU
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Компактне локальне відновлення; попередній процес MI-GAN, контекст 512 пікс. на CPU
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Тіні та відбиття
+	Preview ready. Apply or Cancel.	Попередній перегляд готовий. Застосуйте або скасуйте.
+	Install from folder…	Установити з теки…
+	Choose a local model bundle.	Виберіть локальний пакет моделі.
+	Local bundle	Локальний пакет
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Локальне видалення об’єктів і ефектів; явний імпорт перетвореного пакета, контекст до 512 пікс.

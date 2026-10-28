@@ -349,7 +349,7 @@ impl std::fmt::Debug for Jobs {
 
 /// Freeze the effective method, model and each rendered brush for action replay. The internal
 /// brush payload is removed before the command result is returned to callers.
-fn canonical_remove_params(id: &str, mut params: Value, result: &mut Value) -> Value {
+pub(crate) fn canonical_remove_params(id: &str, mut params: Value, result: &mut Value) -> Value {
     if id != "paint.remove" || params.get("method").is_none() {
         return params;
     }
@@ -723,6 +723,7 @@ impl Session {
     ) -> Result<Started> {
         self.jobs.spawn = true;
         let r = run(self, label, lock_document, work, apply);
+        self.clear_stale_removal_preview();
         self.jobs.spawn = false;
         let pending = self.jobs.pending.take();
         match (r, pending) {
@@ -877,6 +878,7 @@ impl Session {
     pub(crate) fn dispatch(&mut self, id: &str, params: Value, background: bool) -> Result<Started> {
         // The offer belongs to this one dispatch. Early errors drop it locally, including
         // authorization, validation, floating-selection and admission failures.
+        self.clear_stale_removal_preview();
         let live_commit = self.live_commit.take();
         let spec = crate::commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         // Params are named fields: anything but an object (or null, meaning none) is a caller
@@ -951,20 +953,23 @@ impl Session {
         // Last-resort guard (AGENTS.md, Never crash): a command that panics anyway fails with an
         // error instead of taking the app down. `edit` only commits a document after its closure
         // returns, so the documents are unchanged.
-        let remove_target = self.active().map(|st| (st.doc.id, st.active_layer, st.channel_view.target));
-        let remove_preferences = id.starts_with("prefs.").then(|| self.prefs().generative_remove.clone());
+        let remove_target = self.active().map(|st| (st.doc.id, st.active_layer, st.channel_view.target, st.floating.is_some()));
+        let remove_preferences = self.prefs().generative_remove.clone();
+        let remove_working_rgb = self.color.settings.working_rgb.clone();
         self.live_commit = live_commit.filter(|live| live.cmd == id);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &run_params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("`{id}` failed with an internal error (logged); the document is unchanged"))));
         self.live_commit = None;
-        if self.active().map(|st| (st.doc.id, st.active_layer, st.channel_view.target)) != remove_target
-            || remove_preferences.is_some_and(|before| before != self.prefs().generative_remove)
+        if self.active().map(|st| (st.doc.id, st.active_layer, st.channel_view.target, st.floating.is_some())) != remove_target
+            || remove_preferences != self.prefs().generative_remove
+            || remove_working_rgb != self.color.settings.working_rgb
         {
             self.note_remove_context_change();
         }
         if self.actions.recording.is_none() {
             self.actions.recording = recording;
         }
+        self.clear_stale_removal_preview();
         self.jobs.spawn = false;
         self.coalesce_request = None;
         self.color_restrict = None;
@@ -1005,8 +1010,7 @@ impl Session {
                         st.fx_collapsed.push(layer_id);
                     }
                 }
-                let recorded = canonical_remove_params(id, params, &mut v);
-                self.after_command(id, recorded, spec.journal, Some(nested_from), pre_selected.as_deref());
+                self.after_remove_or_command(id, params, &mut v, spec.journal, Some(nested_from), pre_selected.as_deref());
                 Ok(Started::Done(v))
             }
         }
@@ -1035,6 +1039,28 @@ impl Session {
             }
             (e, _) => e,
         }
+    }
+
+    fn after_remove_or_command(
+        &mut self,
+        id: &str,
+        params: Value,
+        result: &mut Value,
+        journal: bool,
+        nested_from: Option<usize>,
+        pre_selected: Option<&[LayerId]>,
+    ) {
+        if id == "paint.remove" && result.get("preview").and_then(Value::as_bool) == Some(true) {
+            return;
+        }
+        if id == "remove.preview.apply" {
+            if let Some(params) = result.as_object_mut().and_then(|object| object.remove("__removeParams")) {
+                self.after_command("paint.remove", params, true, nested_from, pre_selected);
+            }
+            return;
+        }
+        let params = canonical_remove_params(id, params, result);
+        self.after_command(id, params, journal, nested_from, pre_selected);
     }
 
     /// Bookkeeping after a command (or a job's apply) succeeded.
@@ -1144,8 +1170,7 @@ impl Session {
         // Restoring the viewed document first would attribute Fade and slice updates
         // to that document instead, when the user switched tabs mid-job.
         if let Ok(value) = &mut r {
-            let recorded = canonical_remove_params(command, params.clone(), value);
-            self.after_command(command, recorded, *journal, Some(nested_from), pre_selected.as_deref());
+            self.after_remove_or_command(command, params.clone(), value, *journal, Some(nested_from), pre_selected.as_deref());
             if foreign && let Some((start, _)) = self.actions.recording.as_mut() {
                 *start = self.journal.len();
             }

@@ -79,3 +79,26 @@ fn crop_validation_accepts_finite_fractional_coverage_and_rejects_out_of_range_s
     let oversized = RemovalInput { width: 16_777_217, height: 1, rgb: vec![], mask: vec![] };
     assert!(oversized.validate().is_err());
 }
+
+#[test]
+fn osor_catalog_is_discoverable_without_enabling_its_runtime() {
+    let service = RemovalService::default();
+    let model = service.catalog().iter().find(|model| model.id == "osor-sdxl").expect("OSOR must stay discoverable");
+    assert!(model.memory_mib >= 16 * 1024);
+    assert!(model.url.is_empty(), "OSOR weights must be an explicit local import");
+    let status = service.status().into_iter().find(|status| status.id == model.id).unwrap();
+    assert!(!status.installed);
+    assert!(!status.available);
+    #[cfg(not(feature = "osor"))]
+    assert!(status.reason.unwrap().contains("OSOR"));
+}
+
+#[test]
+fn model_runtime_availability_is_specific_to_the_catalog_adapter() {
+    let service = RemovalService::default();
+    assert!(!service.model_runtime_available("not-a-model"));
+    assert_eq!(service.model_runtime_available("lama"), cfg!(all(not(target_arch = "wasm32"), feature = "native-inference")));
+    assert_eq!(service.model_runtime_available("osor-sdxl"), cfg!(all(not(target_arch = "wasm32"), feature = "osor")));
+    #[cfg(all(not(target_arch = "wasm32"), feature = "osor", not(feature = "osor-metal")))]
+    assert!(!service.with_osor_backend(OsorBackend::Metal { ordinal: 0 }).model_runtime_available("osor-sdxl"));
+}

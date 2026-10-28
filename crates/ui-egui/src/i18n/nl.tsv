@@ -4276,3 +4276,11 @@ curves	Smooth	Vloeiend maken
 	Settings take effect immediately.	Instellingen worden direct toegepast.
 	Local background reconstruction; 512 px context, CPU processing	Lokale achtergrondreconstructie; context van 512 px, verwerking door CPU
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Compacte lokale reconstructie; oudere MI-GAN-pijplijn, context van 512 px op CPU
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Schaduwen en weerspiegelingen
+	Preview ready. Apply or Cancel.	Voorvertoning gereed. Toepassen of Annuleren.
+	Install from folder…	Installeren vanuit map…
+	Choose a local model bundle.	Kies een lokaal modelpakket.
+	Local bundle	Lokaal pakket
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Lokaal objecten en effecten verwijderen; expliciete import van een geconverteerd pakket, context tot 512 px

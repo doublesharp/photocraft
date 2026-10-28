@@ -4205,3 +4205,11 @@ curves	Smooth	スムーズ
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	コンパクトなローカル再構成。従来の MI-GAN パイプライン、512 px の周辺領域、CPU 処理
 	local AI processing is disabled	ローカル AI 処理が無効です
 	the selected model is not yet qualified for Automatic Remove	選択したモデルは自動削除の基準をまだ満たしていません
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	影と反射
+	Preview ready. Apply or Cancel.	プレビューの準備ができました。適用またはキャンセルしてください。
+	Install from folder…	フォルダーからインストール…
+	Choose a local model bundle.	ローカルのモデルバンドルを選択してください。
+	Local bundle	ローカルバンドル
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	ローカルでオブジェクトと効果を除去。変換済みバンドルの明示的な読み込みが必要。周辺領域は最大 512 px

@@ -174,7 +174,8 @@ impl Drop for Partial<'_> {
         if let Ok(entries) = self.store.dir.entries() {
             for entry in entries.take(4096).flatten() {
                 let name = entry.file_name();
-                if name == OsStr::new(&self.name) || Path::new(&name).extension() == Some(OsStr::new("onnx")) {
+                if name == OsStr::new(&self.name) || name == OsStr::new("osor-sdxl-reference.json") || Path::new(&name).extension() == Some(OsStr::new("onnx"))
+                {
                     continue;
                 }
                 if let Ok(file) = self.store.open_regular(&name)

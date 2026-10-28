@@ -4219,3 +4219,11 @@ curves	Smooth	Εξομάλυνση
 	Settings take effect immediately.	Οι ρυθμίσεις ισχύουν αμέσως.
 	Local background reconstruction; 512 px context, CPU processing	Τοπική ανακατασκευή φόντου· περιοχή 512 px, επεξεργασία CPU
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Συμπαγής τοπική ανακατασκευή· παλαιότερη ροή MI-GAN, περιοχή 512 px σε CPU
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Σκιές και αντανακλάσεις
+	Preview ready. Apply or Cancel.	Η προεπισκόπηση είναι έτοιμη. Επιλέξτε Εφαρμογή ή Ακύρωση.
+	Install from folder…	Εγκατάσταση από φάκελο…
+	Choose a local model bundle.	Επιλέξτε ένα τοπικό πακέτο μοντέλου.
+	Local bundle	Τοπικό πακέτο
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Τοπική αφαίρεση αντικειμένων και εφέ· ρητή εισαγωγή πακέτου που έχει μετατραπεί, περιοχή έως 512 px

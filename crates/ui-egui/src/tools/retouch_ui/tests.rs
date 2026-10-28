@@ -1,6 +1,8 @@
 use super::*;
 use crate::canvas::{ToolEvent, tool_event};
 
+static REMOVE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 100, "height": 60})).unwrap();
@@ -1145,6 +1147,7 @@ fn review_queue_does_not_survive_a_document_round_trip() {
 
 #[test]
 fn review_queued_brush_geometry_survives_tip_and_scatter_changes() {
+    let _guard = REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     struct Black;
     impl photocraft_ml::RemovalBackend for Black {
         fn ready(&self, _: &str) -> bool {
@@ -1156,7 +1159,7 @@ fn review_queued_brush_geometry_survives_tip_and_scatter_changes() {
             input: &photocraft_ml::RemovalInput,
             _: &dyn photocraft_ml::RemovalControl,
         ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
-            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.0; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.0; input.rgb.len()], edit_alpha: None, inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
         }
     }
     let run = |change: bool| {
@@ -1243,4 +1246,68 @@ fn review3_pending_remove_rejects_excessive_dabs_before_tint_allocation() {
     assert!(app.remove_trail.is_none(), "an inadmissible stroke allocated its tint renderer");
     assert!(app.ui.status_error);
     assert!(app.ui.status.contains("brush work"), "{}", app.ui.status);
+}
+
+#[test]
+fn osor_effect_choice_survives_state_and_requests_preview() {
+    let options: crate::state::ToolOptions = serde_json::from_value(json!({
+        "remove_method": "ai", "remove_effects": true
+    }))
+    .unwrap();
+    let params = remove_params(&options);
+    assert_eq!(params["removeEffects"], true, "effects choice must reach the engine");
+    assert_eq!(params["preview"], true, "effects must be reviewed before application");
+    let restored: crate::state::ToolOptions = serde_json::from_value(serde_json::to_value(options).unwrap()).unwrap();
+    assert_eq!(remove_params(&restored)["removeEffects"], true);
+}
+
+#[test]
+fn osor_selected_model_requests_review_even_without_effects() {
+    let mut app = app();
+    app.session.edit_prefs(|p| p.generative_remove.selected_model = "osor-sdxl".into());
+    app.ui.tool_options.remove_method = "ai".into();
+    let request = removal_request(&app, &app.ui.tool_options);
+    assert_eq!(request["preview"], true);
+    assert!(request.get("removeEffects").is_none());
+}
+
+#[test]
+fn osor_preview_canvas_and_apply_use_the_same_candidate() {
+    let _guard = REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    struct Black;
+    impl photocraft_ml::RemovalBackend for Black {
+        fn ready(&self, _: &str) -> bool {
+            true
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.; input.rgb.len()], edit_alpha: None, inference_scale: 1., load_ms: 0., forward_ms: 0. })
+        }
+    }
+    let mut app = app();
+    app.run("file.new", json!({"width":100,"height":60,"background":"white"})).unwrap();
+    app.background_jobs = false;
+    app.session.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::new(None).with_backend(std::sync::Arc::new(Black))));
+    app.session.edit_prefs(|p| p.generative_remove.enabled = true);
+    app.ui.tool = Tool::Remove;
+    let source = app.session.active().unwrap().doc.clone();
+    app.run("paint.remove", json!({"method":"ai", "modelId":"lama", "points":[[50,30]], "size":16, "preview":true})).unwrap();
+    let (candidate, _) = app.session.removal_preview_document().unwrap();
+    let index = app.session.active_index().unwrap();
+    let (shown, _) = crate::canvas::display_doc(&mut app, index);
+    assert!(std::sync::Arc::ptr_eq(&shown, &candidate), "canvas must display the engine candidate");
+    assert!(std::sync::Arc::ptr_eq(&source, &app.session.active().unwrap().doc), "preview leaves source unchanged");
+    remove_preview_apply(&mut app);
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+    assert!(app.session.removal_preview_document().is_none());
+    assert_eq!(
+        photocraft_compose::render(&candidate, candidate.bounds()).px,
+        photocraft_compose::render(&app.session.active().unwrap().doc, candidate.bounds()).px
+    );
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(photocraft_compose::render(&source, source.bounds()).px, photocraft_compose::render(&app.session.active().unwrap().doc, source.bounds()).px);
 }

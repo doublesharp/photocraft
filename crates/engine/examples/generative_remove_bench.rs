@@ -17,14 +17,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("set PHOTOCRAFT_MODEL_DIR to a managed directory containing the installed catalog artifact")?;
     let service = RemovalService::new(Some(directory.into()));
     if !service.catalog().iter().any(|model| model.id == id) {
-        return Err("model must be a catalog ID: lama or migan-v1".into());
+        return Err("model must be a catalog ID: lama, migan-v1 or osor-sdxl".into());
     }
+    #[cfg(all(feature = "osor-metal", target_os = "macos"))]
+    let service = service.with_osor_backend(photocraft_ml::OsorBackend::Metal { ordinal: 0 });
     let mut session = Session::new();
     session.set_removal_service(Arc::new(service));
     session.edit_prefs(|prefs| {
         prefs.generative_remove.enabled = true;
         prefs.generative_remove.enabled_models = vec![id.clone()];
         prefs.generative_remove.selected_model = id.clone();
+        if id == "osor-sdxl" {
+            prefs.performance.memory_usage_mb = 49152;
+        }
     });
     session.execute("file.new", json!({"width":6000,"height":4000,"background":"white"}))?;
     session.execute("filter.render.clouds", json!({"seed":3}))?;
@@ -42,8 +47,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut params = json!({"points":[[3000,1960],[3000,2040]],"size":32,"method":method});
             if method == "ai" {
                 params["modelId"] = json!(id);
+                if id == "osor-sdxl" {
+                    params["preview"] = json!(true);
+                    params["removeEffects"] = json!(true);
+                }
             }
-            let result = session.execute("paint.remove", params)?;
+            let preview = session.execute("paint.remove", params)?;
+            let result = if let Some(id) = preview.get("previewId").and_then(serde_json::Value::as_u64) {
+                session.execute("remove.preview.apply", json!({"id":id}))?
+            } else {
+                preview
+            };
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
             let rss = sampler.peak();
             runs.push(json!({"method":method,"iteration":index,"elapsedMs":elapsed_ms,"sampledPeakRssBytes":rss,"result":result}));

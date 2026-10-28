@@ -3165,3 +3165,11 @@ curves	Smooth	平滑
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	精簡的本機重建；舊版 MI-GAN 流程，512 像素周邊範圍，CPU 處理
 	local AI processing is disabled	本機 AI 處理已停用
 	the selected model is not yet qualified for Automatic Remove	所選模型尚未達到自動移除的要求
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	陰影與反射
+	Preview ready. Apply or Cancel.	預覽已就緒。請選擇套用或取消。
+	Install from folder…	從資料夾安裝…
+	Choose a local model bundle.	選擇本機模型套件。
+	Local bundle	本機模型套件
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	本機移除物件及其效果；需明確匯入轉換後的模型套件，周邊範圍最大 512 像素

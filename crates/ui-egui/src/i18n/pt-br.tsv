@@ -4446,3 +4446,11 @@ layerLabel	No Color	Sem cor
 	Settings take effect immediately.	As configurações entram em vigor imediatamente.
 	Local background reconstruction; 512 px context, CPU processing	Reconstrução local do fundo; contexto de 512 px, processamento por CPU
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Reconstrução local compacta; fluxo MI-GAN anterior, contexto de 512 px na CPU
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Sombras e reflexos
+	Preview ready. Apply or Cancel.	Prévia pronta. Aplicar ou Cancelar.
+	Install from folder…	Instalar de pasta…
+	Choose a local model bundle.	Escolha um pacote de modelo local.
+	Local bundle	Pacote local
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Remoção local de objetos e efeitos; importação explícita de pacote convertido, contexto de até 512 px

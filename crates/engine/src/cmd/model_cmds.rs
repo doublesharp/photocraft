@@ -55,7 +55,8 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
                 "backend":spec.backend, "inputSize":spec.input_size, "memoryMib":spec.memory_mib,
                 // `available` means this build supports the adapter, so an uninstalled model can be
                 // installed. A size-matching artifact can be attempted but still needs verification.
-                "available":runtime, "canAttempt":status.is_some_and(|v| v.available), "autoQualified":false,
+                "available":service.model_runtime_available(spec.id), "canAttempt":status.is_some_and(|v| v.available), "autoQualified":false,
+                "artifactKind":if spec.id == "osor-sdxl" { "bundle" } else { "file" }, "canDownload":!spec.url.is_empty(),
                 "installed":status.is_some_and(|v| v.installed), "verified":status.is_some_and(|v| v.verified),
                 "busy":status.is_some_and(|v| v.busy), "reason":status.and_then(|v| v.reason.as_deref()),
                 "enabled":preferences.enabled_models.iter().any(|id| id == spec.id),
@@ -80,7 +81,7 @@ fn capabilities(s: &mut Session, p: &Value) -> Result<Value> {
         Some("local AI processing is disabled".to_string())
     } else if !prefs.enabled_models.iter().any(|model| model == id) {
         Some("the selected removal model is disabled".to_string())
-    } else if !service.runtime_available() {
+    } else if !service.model_runtime_available(id) {
         Some("local AI inference is unavailable in this build".to_string())
     } else if let Some(reason) = target_reason.clone() {
         Some(reason)
@@ -123,7 +124,7 @@ fn manage(s: &mut Session, p: &Value, cmd: &'static str) -> Result<Value> {
             .get("path")
             .and_then(Value::as_str)
             .filter(|path| !path.is_empty() && path.len() <= 4096)
-            .ok_or_else(|| bad(cmd, "`path` must be a nonempty model file path"))?;
+            .ok_or_else(|| bad(cmd, "`path` must be a nonempty model file or bundle directory path"))?;
         Some(PathBuf::from(path))
     } else {
         None
@@ -163,7 +164,9 @@ pub fn specs() -> Vec<CommandSpec> {
         spec("ai.models.list", "Local AI Models", r#"{} → {runtimeAvailable,managementAvailable,models}"#, list),
         spec("remove.capabilities", "Remove Capabilities", r#"{"modelId":catalog id?} → availability and target requirements"#, capabilities),
         spec("ai.models.install", "Download Local Model", r#"{"modelId":catalog id}"#, |s, p| manage(s, p, "ai.models.install")),
-        spec("ai.models.import", "Import Local Model", r#"{"modelId":catalog id,"path":local file path}"#, |s, p| manage(s, p, "ai.models.import")),
+        spec("ai.models.import", "Import Local Model", r#"{"modelId":catalog id,"path":local model file or bundle directory path}"#, |s, p| {
+            manage(s, p, "ai.models.import")
+        }),
         spec("ai.models.remove", "Remove Local Model", r#"{"modelId":catalog id}"#, |s, p| manage(s, p, "ai.models.remove")),
     ]
 }

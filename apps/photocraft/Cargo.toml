@@ -11,6 +11,9 @@ build = "build.rs"
 default = ["local-ai"]
 # Native Rust CPU inference; weights are optional downloads, never embedded.
 local-ai = ["photocraft-engine/native-inference"]
+# Experimental native OSOR integration; model bundles remain a separate local import.
+osor = ["photocraft-engine/osor", "photocraft-ml/osor"]
+osor-metal = ["osor", "photocraft-engine/osor-metal", "photocraft-ml/osor-metal"]
 # Open HEIC/HEIF photos (the optional photocraft-heif crate). Not default so distributors choose
 # it; official builds (CI, packaging/, release) build with `--features heif`.
 heif = ["photocraft-codecs/heif"]

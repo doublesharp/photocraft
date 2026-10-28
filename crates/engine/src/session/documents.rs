@@ -22,6 +22,7 @@ impl Session {
     /// Inject the app's model directory, verified runtime and optional transport.
     pub fn set_removal_service(&mut self, service: Arc<photocraft_ml::RemovalService>) {
         self.removal_service = service;
+        self.note_remove_context_change();
     }
 
     /// Clone the service so a worker can own its lease independently of the session.
@@ -59,6 +60,7 @@ impl Session {
 
     pub(crate) fn note_remove_context_change(&mut self) {
         self.remove_context_generation = self.remove_context_generation.wrapping_add(1);
+        self.removal_preview = None;
     }
 
     /// Bump [`Self::active_generation`] when the active document id changed. Call after every
@@ -66,6 +68,7 @@ impl Session {
     pub(crate) fn note_active_change(&mut self) {
         let id = self.active().map(|st| st.doc.id);
         if id != self.active_doc_for_generation {
+            self.removal_preview = None;
             self.active_doc_for_generation = id;
             self.active_generation = self.active_generation.wrapping_add(1);
         }

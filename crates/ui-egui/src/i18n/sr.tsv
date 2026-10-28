@@ -4588,3 +4588,11 @@ shape	Appearance	Izgled
 	Settings take effect immediately.	Postavke važe odmah.
 	Local background reconstruction; 512 px context, CPU processing	Lokalna rekonstrukcija pozadine; kontekst od 512 px, obrada na CPU
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Kompaktna lokalna rekonstrukcija; stariji MI-GAN postupak, kontekst od 512 px na CPU
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Senke i odrazi
+	Preview ready. Apply or Cancel.	Pregled je spreman. Primeni ili Otkaži.
+	Install from folder…	Instaliraj iz fascikle…
+	Choose a local model bundle.	Izaberite lokalni paket modela.
+	Local bundle	Lokalni paket
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Lokalno uklanjanje objekata i efekata; izričit uvoz konvertovanog paketa, kontekst do 512 px

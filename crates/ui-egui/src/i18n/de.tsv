@@ -3540,3 +3540,11 @@ curves	Smooth	Glätten
 	Settings take effect immediately.	Einstellungen gelten sofort.
 	Local background reconstruction; 512 px context, CPU processing	Lokale Hintergrundrekonstruktion; 512 px Kontext, CPU-Verarbeitung
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Kompakte lokale Rekonstruktion; ältere MI-GAN-Pipeline, 512 px Kontext auf der CPU
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Schatten und Reflexionen
+	Preview ready. Apply or Cancel.	Vorschau bereit. Anwenden oder Abbrechen.
+	Install from folder…	Aus Ordner installieren…
+	Choose a local model bundle.	Wähle ein lokales Modellpaket.
+	Local bundle	Lokales Paket
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Lokales Entfernen von Objekten und Effekten; ausdrücklicher Import eines konvertierten Pakets, bis zu 512 px Kontext

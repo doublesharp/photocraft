@@ -107,7 +107,7 @@ fn cancelled_noninterruptible_backend_keeps_global_permit_until_exit() {
         fn infer(&self, _: &str, input: &RemovalInput, _: &dyn RemovalControl) -> Result<RemovalOutput> {
             self.entered.send(()).unwrap();
             self.exit.lock().unwrap().recv().unwrap();
-            Ok(RemovalOutput { rgb: input.rgb.clone(), inference_scale: 1., load_ms: 0., forward_ms: 0. })
+            Ok(RemovalOutput { edit_alpha: None, rgb: input.rgb.clone(), inference_scale: 1., load_ms: 0., forward_ms: 0. })
         }
     }
     struct Control(AtomicBool);
@@ -177,12 +177,12 @@ fn directory_swap_during_install_cannot_publish_outside_the_store() {
 fn malformed_adapter_outputs_and_diagnostics_are_rejected() {
     let input = RemovalInput { width: 2, height: 1, rgb: vec![0.5; 6], mask: vec![0., 1.] };
     for output in [
-        RemovalOutput { rgb: vec![0.5; 5], inference_scale: 1., load_ms: 0., forward_ms: 0. },
-        RemovalOutput { rgb: vec![f32::NAN; 6], inference_scale: 1., load_ms: 0., forward_ms: 0. },
-        RemovalOutput { rgb: vec![1.1; 6], inference_scale: 1., load_ms: 0., forward_ms: 0. },
-        RemovalOutput { rgb: vec![0.5; 6], inference_scale: 1.1, load_ms: 0., forward_ms: 0. },
-        RemovalOutput { rgb: vec![0.5; 6], inference_scale: 1., load_ms: f64::NAN, forward_ms: 0. },
-        RemovalOutput { rgb: vec![0.5; 6], inference_scale: 1., load_ms: 0., forward_ms: -1. },
+        RemovalOutput { edit_alpha: None, rgb: vec![0.5; 5], inference_scale: 1., load_ms: 0., forward_ms: 0. },
+        RemovalOutput { edit_alpha: None, rgb: vec![f32::NAN; 6], inference_scale: 1., load_ms: 0., forward_ms: 0. },
+        RemovalOutput { edit_alpha: None, rgb: vec![1.1; 6], inference_scale: 1., load_ms: 0., forward_ms: 0. },
+        RemovalOutput { edit_alpha: None, rgb: vec![0.5; 6], inference_scale: 1.1, load_ms: 0., forward_ms: 0. },
+        RemovalOutput { edit_alpha: None, rgb: vec![0.5; 6], inference_scale: 1., load_ms: f64::NAN, forward_ms: 0. },
+        RemovalOutput { edit_alpha: None, rgb: vec![0.5; 6], inference_scale: 1., load_ms: 0., forward_ms: -1. },
     ] {
         assert!(validate_output(&input, &output).is_err(), "invalid adapter output accepted: {output:?}");
     }
@@ -252,7 +252,7 @@ fn early_admission_bounds_memory_and_holds_process_wide_permit() {
             true
         }
         fn infer(&self, _: &str, input: &RemovalInput, _: &dyn RemovalControl) -> Result<RemovalOutput> {
-            Ok(RemovalOutput { rgb: input.rgb.clone(), inference_scale: 1., load_ms: 0., forward_ms: 0. })
+            Ok(RemovalOutput { edit_alpha: None, rgb: input.rgb.clone(), inference_scale: 1., load_ms: 0., forward_ms: 0. })
         }
     }
     let _serial = ADMISSION_TEST.lock().unwrap();
@@ -747,13 +747,327 @@ fn review_truncated_catalog_file_remains_visible_and_removable() {
     let _serial = ADMISSION_TEST.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let service = NativeService::new(Some(temp.path().join("models")));
-    let model = &crate::catalog::CATALOG[0];
+    let model = crate::catalog::find("lama").unwrap();
     let path = service.path(model, true).unwrap();
     fs::write(&path, b"short").unwrap();
-    let status = service.status(true).into_iter().find(|status| status.id == model.id).unwrap();
+    let status = service.status(|_| true).into_iter().find(|status| status.id == model.id).unwrap();
     assert!(status.installed, "the manager must be able to remove a corrupt owned artifact");
     assert!(!status.available && !status.verified);
     assert!(status.reason.unwrap().contains("size"));
     service.remove(model).unwrap();
     assert!(!path.exists());
+}
+
+#[cfg(feature = "osor")]
+fn osor_receipt_fixture(path: &Path) {
+    use osor_rs::artifact::{BundleDigests, InputDigests, Manifest, SourceProvenance};
+    fs::create_dir(path).unwrap();
+    // Store-only fixture: valid tiny tensor containers, deliberately not a neural graph.
+    for (index, name) in ["unet.safetensors", "vae.safetensors", "prompt.safetensors"].into_iter().enumerate() {
+        let header = serde_json::to_vec(&serde_json::json!({"fixture.weight": {"dtype": "F32", "shape": [1], "data_offsets": [0,4]}})).unwrap();
+        let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+        bytes.extend(header);
+        bytes.extend((index as f32).to_le_bytes());
+        fs::write(path.join(name), bytes).unwrap();
+    }
+    let provenance = SourceProvenance { repository: "https://example.invalid/source".into(), revision: "1".repeat(40), license: "fixture-only".into() };
+    let digest = |name| format!("{:x}", Sha256::digest(fs::read(path.join(name)).unwrap()));
+    let manifest = Manifest {
+        schema_version: 1,
+        upstream_revision: osor_rs::UPSTREAM_REVISION.into(),
+        pipeline: osor_rs::artifact::PIPELINE.into(),
+        base_model: provenance.clone(),
+        vae_model: provenance.clone(),
+        checkpoint: provenance.clone(),
+        prompt: provenance,
+        config: None,
+        input_sha256: InputDigests { base_unet: "2".repeat(64), base_vae: "3".repeat(64), checkpoint: "4".repeat(64), prompt: "5".repeat(64) },
+        sha256: BundleDigests { unet: digest("unet.safetensors"), vae: digest("vae.safetensors"), prompt: digest("prompt.safetensors") },
+        scheduler: osor_rs::scheduler::SchedulerConfig::default(),
+        timestep: 400,
+        vae_scaling_factor: 0.13025,
+        adapter_rank: 256,
+        adapter_alpha: 256.,
+    };
+    fs::write(path.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_reference_import_pins_local_bytes_without_copying_or_deleting_weights() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("bundle");
+    osor_receipt_fixture(&source);
+    let root = temp.path().join("models");
+    let service = RemovalService::new(Some(root.clone()));
+    service.import("osor-sdxl", &source, &NoopControl).unwrap();
+    let status = service.status().into_iter().find(|s| s.id == "osor-sdxl").unwrap();
+    assert!(status.installed && status.available && status.verified);
+    let entries = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name()).collect::<Vec<_>>();
+    assert_eq!(entries, ["osor-sdxl-reference.json"]);
+    let pinned = service.model_sha256("osor-sdxl").unwrap();
+    assert_eq!(pinned, format!("{:x}", Sha256::digest(fs::read(source.join("manifest.json")).unwrap())));
+    service.import("osor-sdxl", &source, &NoopControl).unwrap();
+    let reloaded = RemovalService::new(Some(root));
+    let status = reloaded.status().into_iter().find(|s| s.id == "osor-sdxl").unwrap();
+    assert!(status.installed && status.available && !status.verified, "restarted service must not claim a current byte verification");
+    assert_eq!(reloaded.model_sha256("osor-sdxl").unwrap(), pinned);
+    service.remove("osor-sdxl").unwrap();
+    assert!(source.join("unet.safetensors").is_file());
+    assert!(!service.status().into_iter().find(|s| s.id == "osor-sdxl").unwrap().installed);
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_reference_rehashes_changed_bytes_even_when_length_and_mtime_are_restored() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("bundle");
+    osor_receipt_fixture(&source);
+    let service = RemovalService::new(Some(temp.path().join("models")));
+    service.import("osor-sdxl", &source, &NoopControl).unwrap();
+    let path = source.join("unet.safetensors");
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let mut corrupted = fs::read(&path).unwrap();
+    *corrupted.last_mut().unwrap() ^= 1;
+    fs::write(&path, corrupted).unwrap();
+    File::open(&path).unwrap().set_modified(modified).unwrap();
+    let input = RemovalInput { width: 2, height: 1, rgb: vec![0.5; 6], mask: vec![0., 1.] };
+    assert!(matches!(service.infer("osor-sdxl", &input, &NoopControl), Err(Error::Integrity(_))), "changed bytes must fail before neural model load");
+    let status = service.status().into_iter().find(|s| s.id == "osor-sdxl").unwrap();
+    assert!(status.installed && !status.verified);
+    assert!(!status.available, "failed verification must keep the corrupted bundle unavailable until a successful reimport");
+}
+
+#[cfg(all(feature = "osor", unix))]
+#[test]
+fn osor_reference_rejects_source_symlinks_and_cannot_remove_their_targets() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("bundle");
+    osor_receipt_fixture(&source);
+    let service = RemovalService::new(Some(temp.path().join("models")));
+    let alias = temp.path().join("alias");
+    std::os::unix::fs::symlink(&source, &alias).unwrap();
+    assert!(service.import("osor-sdxl", &alias, &NoopControl).is_err());
+    let victim = temp.path().join("victim");
+    let expected = fs::read(source.join("unet.safetensors")).unwrap();
+    fs::rename(source.join("unet.safetensors"), &victim).unwrap();
+    std::os::unix::fs::symlink(&victim, source.join("unet.safetensors")).unwrap();
+    assert!(service.import("osor-sdxl", &source, &NoopControl).is_err());
+    service.remove("osor-sdxl").unwrap();
+    assert_eq!(fs::read(&victim).unwrap(), expected);
+}
+
+#[test]
+fn learned_alpha_output_is_bounded_and_matches_the_source_crop() {
+    let input = RemovalInput { width: 2, height: 1, rgb: vec![0.5; 6], mask: vec![0., 1.] };
+    for alpha in [vec![0.5], vec![f32::NAN, 0.5], vec![-0.1, 0.5], vec![0.5, 1.1]] {
+        let output = RemovalOutput { rgb: input.rgb.clone(), edit_alpha: Some(alpha), inference_scale: 1., load_ms: 0., forward_ms: 0. };
+        assert!(validate_output(&input, &output).is_err());
+    }
+    let output = RemovalOutput { rgb: input.rgb.clone(), edit_alpha: Some(vec![0.25, 0.75]), inference_scale: 1., load_ms: 0., forward_ms: 0. };
+    assert!(validate_output(&input, &output).is_ok());
+}
+
+#[test]
+fn osor_admission_includes_its_retained_learned_alpha() {
+    struct Echo;
+    impl RemovalBackend for Echo {
+        fn ready(&self, _: &str) -> bool {
+            true
+        }
+        fn infer(&self, _: &str, input: &RemovalInput, _: &dyn RemovalControl) -> Result<RemovalOutput> {
+            Ok(RemovalOutput { rgb: input.rgb.clone(), edit_alpha: Some(vec![0.5; input.mask.len()]), inference_scale: 1., load_ms: 0., forward_ms: 0. })
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let service = RemovalService::default().with_backend(Arc::new(Echo));
+    let input = RemovalInput { width: 2, height: 1, rgb: vec![0.5; 6], mask: vec![0., 1.] };
+    let model_memory = u64::from(crate::catalog::find("osor-sdxl").unwrap().memory_mib) * 1024 * 1024;
+    assert!(service.admit("osor-sdxl", 64, model_memory + 63).is_err());
+    let mut undersized = service.admit("osor-sdxl", 56, model_memory + 56).unwrap();
+    assert!(matches!(undersized.infer(&input, &NoopControl), Err(Error::InvalidInput(_))));
+    drop(undersized);
+    let mut permit = service.admit("osor-sdxl", 64, model_memory + 64).unwrap();
+    let output = permit.infer(&input, &NoopControl).unwrap();
+    let reservation = permit.into_reservation();
+    assert!(matches!(service.import("osor-sdxl", Path::new("no-bundle"), &NoopControl), Err(Error::Busy)));
+    drop(output);
+    drop(reservation);
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_reference_cleanup_preserves_receipt_when_staged_leaf_is_removed() {
+    struct RemovePartialOnComplete(PathBuf);
+    impl RemovalControl for RemovePartialOnComplete {
+        fn cancelled(&self) -> bool {
+            false
+        }
+        fn progress(&self, fraction: f32, _: &str) {
+            if fraction != 1. {
+                return;
+            }
+            let partial = fs::read_dir(&self.0)
+                .unwrap()
+                .find_map(|entry| {
+                    let entry = entry.unwrap();
+                    entry.file_name().to_string_lossy().ends_with(".partial").then(|| entry.path())
+                })
+                .unwrap();
+            fs::remove_file(partial).unwrap();
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("bundle");
+    osor_receipt_fixture(&source);
+    let root = temp.path().join("models");
+    let service = RemovalService::new(Some(root.clone()));
+    service.import("osor-sdxl", &source, &RemovePartialOnComplete(root)).unwrap();
+    assert!(service.status().into_iter().find(|s| s.id == "osor-sdxl").unwrap().installed, "cleanup must retain the successfully published receipt");
+}
+
+#[test]
+fn corrupt_osor_receipt_is_visible_and_removable_even_without_its_runtime() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let model = crate::catalog::find("osor-sdxl").unwrap();
+    let service = NativeService::new(Some(temp.path().join("models")));
+    let path = service.path(model, true).unwrap();
+    fs::write(&path, b"short").unwrap();
+    let status = service.status(|_| false).into_iter().find(|s| s.id == model.id).unwrap();
+    assert!(status.installed && !status.available && !status.verified);
+    service.remove(model).unwrap();
+    assert!(!path.exists());
+}
+
+#[cfg(all(feature = "osor-metal", target_os = "macos"))]
+#[test]
+#[ignore = "requires an explicitly supplied local OSOR bundle and the sole real-model memory window"]
+fn real_osor_service_smoke_restores_rgb_alpha_and_reuses_warm_family() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let source = PathBuf::from(std::env::var_os("PHOTOCRAFT_ML_OSOR_BUNDLE").expect("supply the local converted bundle explicitly"));
+    let temp = tempfile::tempdir().unwrap();
+    let service = RemovalService::new(Some(temp.path().join("models"))).with_osor_backend(crate::OsorBackend::Metal { ordinal: 0 });
+    service.import("osor-sdxl", &source, &NoopControl).unwrap();
+    let identity = service.model_sha256("osor-sdxl").unwrap();
+    // Odd source dimensions exercise independent axis padding and exact restoration.
+    let (width, height) = (101u32, 47u32);
+    let mut rgb = Vec::new();
+    let mut mask = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            let hole = (43..58).contains(&x) && (18..30).contains(&y);
+            rgb.extend(if hole { [0.8, 0.15, 0.1] } else { [0.2 + x as f32 / width as f32 * 0.3, 0.3 + y as f32 / height as f32 * 0.2, 0.4] });
+            mask.push(if hole { 1. } else { 0. });
+        }
+    }
+    let input = RemovalInput { width, height, rgb, mask };
+    let transient = u64::from(width) * u64::from(height) * 32;
+    let budget = u64::from(crate::catalog::find("osor-sdxl").unwrap().memory_mib) * 1024 * 1024 + transient;
+    let mut cold_permit = service.admit("osor-sdxl", transient, budget).unwrap();
+    let cold = cold_permit.infer(&input, &NoopControl).unwrap();
+    let reservation = cold_permit.into_reservation();
+    validate_output(&input, &cold).unwrap();
+    assert!(cold.load_ms > 0. && cold.forward_ms > 0.);
+    assert_eq!(cold.edit_alpha.as_ref().unwrap().len(), input.mask.len());
+    assert!(matches!(service.remove("osor-sdxl"), Err(Error::Busy)), "returned output must retain global model ownership");
+    let cold_load_ms = cold.load_ms;
+    let cold_forward_ms = cold.forward_ms;
+    let reference_rgb = cold.rgb.clone();
+    let reference_alpha = cold.edit_alpha.clone().unwrap();
+    drop(cold);
+    drop(reservation);
+    let mut warm_permit = service.admit("osor-sdxl", transient, budget).unwrap();
+    let warm = warm_permit.infer(&input, &NoopControl).unwrap();
+    let reservation = warm_permit.into_reservation();
+    validate_output(&input, &warm).unwrap();
+    assert_eq!(warm.load_ms, 0.);
+    let rgb_max_difference = reference_rgb.iter().zip(&warm.rgb).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    let alpha_max_difference = reference_alpha.iter().zip(warm.edit_alpha.as_ref().unwrap()).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(rgb_max_difference <= 0.00001 && alpha_max_difference <= 0.00001, "explicit noise must reproduce the warm output");
+    println!(
+        "{}",
+        serde_json::json!({
+            "kind": "photocraft-ml OSOR service smoke", "backend": "Metal F32", "modelSha256": identity,
+            "sourceWidth": width, "sourceHeight": height, "modelWidth": 104, "modelHeight": 48,
+            "coldLoadMs": cold_load_ms, "coldForwardMs": cold_forward_ms, "warmLoadMs": warm.load_ms, "warmForwardMs": warm.forward_ms,
+            "rgbSamples": warm.rgb.len(), "alphaSamples": warm.edit_alpha.as_ref().unwrap().len(), "inferenceScale": warm.inference_scale,
+            "rgbMaxDifference": rgb_max_difference, "alphaMaxDifference": alpha_max_difference, "outputReservationBusy": true,
+            "qualification": "synthetic-crop bridge smoke only; no independent reference or visual quality claim"
+        })
+    );
+    drop(warm);
+    drop(reservation);
+    service.remove("osor-sdxl").unwrap();
+    assert!(source.join("unet.safetensors").is_file(), "reference removal must preserve source weights");
+}
+
+#[test]
+fn osor_network_install_is_rejected_before_transport_or_storage() {
+    struct UnexpectedTransport(AtomicBool);
+    impl ModelDownloader for UnexpectedTransport {
+        fn open(&self, _: &ModelSpec) -> Result<Box<dyn Read + Send>> {
+            self.0.store(true, Ordering::Release);
+            Err(Error::Download("transport must remain unused".into()))
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let transport = Arc::new(UnexpectedTransport(AtomicBool::new(false)));
+    let service = RemovalService::default().with_downloader(transport.clone());
+    assert!(matches!(service.install("osor-sdxl", &NoopControl), Err(Error::Download(reason)) if reason.contains("local-import only")));
+    assert!(!transport.0.load(Ordering::Acquire));
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_decoded_weight_preflight_rejects_f16_expansion_above_admitted_policy() {
+    let mut header = serde_json::Map::new();
+    for i in 0u64..52 {
+        header.insert(
+            format!("extra{i:03}.weight"),
+            serde_json::json!({
+                "dtype": "F16", "shape": [512,262144], "data_offsets": [i * 268_435_456, (i + 1) * 268_435_456]
+            }),
+        );
+    }
+    let bytes = serde_json::to_vec(&header).unwrap();
+    assert!(
+        matches!(osor_reference::decoded_header_bytes(&bytes, osor_reference::MAX_DECODED_WEIGHTS), Err(Error::Integrity(reason)) if reason.contains("decoded")),
+        "13GiB F16 source must not request26GiB resident F32 weights under the fixed12GiB decoded-weight policy"
+    );
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_import_rejects_sparse_oversized_decoded_weights_before_payload_hashing() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("bundle");
+    osor_receipt_fixture(&source);
+    let mut header = serde_json::Map::new();
+    for i in 0u64..52 {
+        header
+            .insert(format!("extra{i:03}.weight"), serde_json::json!({"dtype":"F16", "shape":[512,262144], "data_offsets":[i*268_435_456,(i+1)*268_435_456]}));
+    }
+    let header = serde_json::to_vec(&header).unwrap();
+    let mut file = File::create(source.join("unet.safetensors")).unwrap();
+    file.write_all(&(header.len() as u64).to_le_bytes()).unwrap();
+    file.write_all(&header).unwrap();
+    file.set_len(8 + header.len() as u64 + 52 * 268_435_456).unwrap();
+    drop(file);
+    let service = RemovalService::new(Some(temp.path().join("models")));
+    assert!(
+        matches!(service.import("osor-sdxl", &source, &NoopControl), Err(Error::Integrity(reason)) if reason.contains("decoded")),
+        "reject oversized decoded weights from the hashed header before reading13GiB of sparse payload"
+    );
+    assert!(!temp.path().join("models/osor-sdxl-reference.json").exists());
+    for dtype in ["F16", "BF16", "F32"] {
+        let header = serde_json::to_vec(&serde_json::json!({"weight":{"dtype":dtype,"shape":[1024],"data_offsets":[0,4096]}})).unwrap();
+        assert_eq!(osor_reference::decoded_header_bytes(&header, 4096).unwrap(), 4096);
+        assert!(osor_reference::decoded_header_bytes(&header, 4095).is_err());
+    }
 }

@@ -4729,3 +4729,11 @@ shape	Appearance	Оформление
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Компактное локальное восстановление; прежний процесс MI-GAN, контекст 512 пикс. на CPU
 	local AI processing is disabled	локальная обработка ИИ отключена
 	the selected model is not yet qualified for Automatic Remove	выбранная модель ещё не допущена для автоматического удаления
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Тени и отражения
+	Preview ready. Apply or Cancel.	Предварительный просмотр готов. Примените или отмените.
+	Install from folder…	Установить из папки…
+	Choose a local model bundle.	Выберите локальный пакет модели.
+	Local bundle	Локальный пакет
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Локальное удаление объектов и эффектов; явный импорт преобразованного пакета, контекст до 512 пикс.

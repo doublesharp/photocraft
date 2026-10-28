@@ -14,18 +14,79 @@ The process-wide permit and warm cache hold at most one active operation and one
 
 Hold the returned permit across selection/hole/region and crop construction, inference, and any noninterruptible worker drain. Bind it mutably and call `permit.infer(&input, control) -> Result<RemovalOutput>` once. When output must outlive the worker, consume the permit with `permit.into_reservation()` and keep the owned `RemovalReservation` with the output until it is applied or discarded. The reservation can outlive the service; dropping it releases process-wide admission. Arrange ownership so the output buffers are dropped before the reservation, including error, cancellation, and discard paths. Dropping an untransferred permit also releases admission. The model ID is fixed at admission.
 
-`RemovalService::infer` remains available for callers that have already constructed an input and delegates with an unbounded budget; it releases its permit before returning, so callers retaining output under admission must use the permit and reservation API. Account for all live buffers and the returned output in `transient_bytes`; inference rejects a bound smaller than the actual f32 input RGB, mask and output RGB (28 bytes per pixel). WebAssembly admission and inference report `Error::Unavailable`.
+`RemovalService::infer` remains available for callers that have already constructed an input and delegates with an unbounded budget; it releases its permit before returning, so callers retaining output under admission must use the permit and reservation API. Account for all live buffers and the returned output in `transient_bytes`; inference rejects a bound smaller than the actual f32 input RGB, mask and output RGB (28 bytes per pixel for ONNX; 32 including learned alpha for OSOR). WebAssembly admission and inference report `Error::Unavailable`.
 
 ## Optional real-model check
 
 The ignored `real_models_match_reference_and_reuse_one_warm_family` test requires `PHOTOCRAFT_ML_LAMA`, `PHOTOCRAFT_ML_MIGAN` and `PHOTOCRAFT_ML_ORACLE_DIR`. The oracle directory supplies a 512×512 interleaved RGB byte image (`image.rgb`), a 512×512 binary white-is-hole mask (`mask.bin`), and interleaved RGB byte outputs from an independent reference (`lama.rgb`, `migan.rgb`). Both artifacts are imported and verified by their catalog hashes. The test compares decoded samples within one byte value and checks cold/warm loads. Fixtures and test adapters do not qualify a model or platform; these comparisons cover only the supplied scene.
 
-## OSOR-SDXL Phase II research boundary
+## OSOR-SDXL Phase II bridge
 
-The [OSOR Phase II implementation](https://github.com/Zhouqm-Git/osor/blob/main/osor-sdxlinpainting/scripts/inference_enhance.py) uses a nine-channel UNet input containing noised original latents, an 8× max-pooled mask and the original latents. Its five-channel output contains four denoising channels and an alpha logit; sigmoid alpha blends the denoised and original latents before VAE decode. The released recipe uses timestep 400, fixed prompt embeddings and rank-256 attention and convolution LoRA. A generic SDXL LoRA adapter is not equivalent.
+The `osor-sdxl` catalog entry is always discoverable. Native `osor` enables the
+local `osor-rs` adapter; `osor-metal` also
+compiles its optional Metal backend. The default backend is CPU/F32. Applications
+can explicitly construct `RemovalService::new(directory).with_osor_backend(OsorBackend::Metal { ordinal: 0 })`;
+ML and engine code never read an environment variable to choose a backend. Unsupported
+backend selections report unavailable. `model_runtime_available(id)` reports support
+for each model independently; installing ONNX support does not enable OSOR.
 
-The [Candle SDXL helper](https://github.com/huggingface/candle/blob/main/candle-transformers/src/models/stable_diffusion/mod.rs) constructs a four-channel output, and the inspected UNet forward path does not accept the added pooled-text/time-ID conditioning required by OSOR. A native adapter needs a five-channel head, added conditioning, all matching attention and convolution LoRA tensors, scheduler/VAE logic, a safe offline conversion of the released `.pth` and prompt data, an alpha-bearing output contract, and numerical comparisons to the reference. No OSOR adapter is registered here.
+`service.import("osor-sdxl", bundle_directory, control)` accepts an explicitly
+selected, offline-converted Phase II bundle containing `manifest.json`,
+`unet.safetensors`, `vae.safetensors` and `prompt.safetensors`. Import validates the
+library manifest contract and hashes every capability-opened regular file, then
+publishes only `osor-sdxl-reference.json` in the managed model directory. It never
+copies or redistributes the multi-GB weights, and `install` rejects network downloads
+for OSOR. The source directory and all of its parents must remain at the imported
+path without symlinks. Removing the model removes its managed reference and warm
+cache, leaving the source weights intact. A different reference requires removing
+the current reference first. Bundle files are bounded to 16 GiB in total. The exact tensor headers fed into the
+SHA-256 stream must describe at most 12 GiB of decoded F32 weights; the native
+loader independently enforces the same decoded-byte limit before allocation.
+The 40 GiB model estimate includes headroom for activations and warm allocator
+retention observed in repeated Metal execution; it is not a hard RSS limit.
 
-The [OSOR model card](https://huggingface.co/QinmingZhou/OSOR) identifies the SDXL weights as CreativeML Open RAIL++-M with use restrictions; the source code's MIT license does not grant permissive weight redistribution. The project's permissive-asset policy and any distribution decision must be resolved separately before offering the model.
+The receipt pins exact source file lengths and SHA-256 values, including the raw
+manifest bytes. Before every inference, including warm forwards, the store reopens
+all source files through no-follow capabilities and rehashes them. The cold loader
+receives the trusted manifest SHA-256 and validates the exact tensor bytes parsed
+against its pinned manifest; a post-load manifest comparison provides an additional
+check. Import/hash verification does not claim that the neural graph has successfully
+loaded or that a scene has been qualified: tensor names/shapes are fully checked by
+the library on cold load. Status distinguishes imported presence from verification
+in this service instance; after restart it reports that bytes need reverification.
+A failed source verification marks the current reference unavailable until reimport.
+The shared-store same-user race limitations described above still apply.
 
-A future reusable `osor-rs` crate can own the inference adapter and safe tensor loading. PhotoCraft should retain the model store, crop/mask planning, jobs, document edits and undo. No separate repository or model implementation has been created by this change.
+The initial context limit preserves aspect ratio, downsamples only above a 512 px
+long side, and reflection-pads each axis to a multiple of eight (minimum 32 px).
+Padding is known mask context. RGB and the library's learned edit alpha are restored
+to the source crop dimensions. The bridge supplies explicit Gaussian posterior and
+diffusion noise from two frozen internal seeds, making repeated input reproducible
+without extending `RemovalInput`. Its decoded RGB already includes the library's
+latent alpha blend. `RemovalOutput.edit_alpha: Some(Vec<f32>)` discloses learned edit
+support; consumers must not multiply this alpha into that RGB again. LaMa and MI-GAN
+return `edit_alpha: None`.
+
+OSOR shares the existing process-wide operation permit and single warm-family rule
+with the ONNX adapters. Device work is synchronized even when an observer cancels,
+and the output reservation remains owned until apply/discard. Admission currently
+uses a conservative **40 GiB** model working-set estimate plus caller-owned transient
+buffers. The minimum retained input/output bound is **32 bytes per source pixel**
+for OSOR (including learned alpha), versus 28 for the current ONNX adapters. This is
+an admission estimate, not an operating-system allocation cap. `model_sha256(id)`
+returns the imported raw manifest digest for replay identity; callers must capture or
+revalidate it while holding the removal permit.
+
+The [OSOR model card](https://huggingface.co/QinmingZhou/OSOR) identifies the SDXL
+weights as CreativeML Open RAIL++-M with use restrictions. This bridge provides local
+import only; it does not grant redistribution rights or bundle weights. Code and
+weight licenses remain separate.
+
+The ignored `real_osor_service_smoke_restores_rgb_alpha_and_reuses_warm_family`
+test requires macOS, `--features osor-metal`, and an explicit local
+`PHOTOCRAFT_ML_OSOR_BUNDLE` path. It imports the local reference, runs one synthetic
+101×47 crop cold and warm, checks finite source-sized RGB/alpha, deterministic
+repetition and retained-output admission, then removes only its receipt. Reserve a
+single real-model memory window before running it. It prints a JSON result with
+the pinned manifest digest and shared-host timings; this smoke does not establish
+independent-reference accuracy or visual removal quality.

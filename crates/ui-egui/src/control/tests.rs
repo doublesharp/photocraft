@@ -2096,7 +2096,7 @@ fn remove_options_are_drivable_and_invalid_updates_are_atomic() {
         "ui.set",
         json!({
             "tool":"remove", "removeMethod":"auto", "removeSampleAllLayers":true,
-            "removeNewLayer":true, "removeAfterEachStroke":false
+            "removeNewLayer":true, "removeAfterEachStroke":false, "removeEffects":true
         }),
     );
     assert_eq!(good["ok"], true, "{good}");
@@ -2104,7 +2104,8 @@ fn remove_options_are_drivable_and_invalid_updates_are_atomic() {
     assert_eq!(seen["result"]["remove"]["method"], "auto");
     assert_eq!(seen["result"]["remove"]["pendingStrokes"], 0);
     assert_eq!(seen["result"]["toolOptions"]["remove_new_layer"], true);
-    for invalid in [json!({"removeMethod":"unknown"}), json!({"removeMethod":1}), json!({"removeNewLayer":"yes"})] {
+    assert_eq!(seen["result"]["toolOptions"]["remove_effects"], true);
+    for invalid in [json!({"removeMethod":"unknown"}), json!({"removeMethod":1}), json!({"removeNewLayer":"yes"}), json!({"removeEffects":"yes"})] {
         let mut params = invalid.as_object().unwrap().clone();
         params.insert("removeAfterEachStroke".into(), json!(true));
         assert_eq!(call(&mut app, &ctx, "ui.set", Value::Object(params))["ok"], false);

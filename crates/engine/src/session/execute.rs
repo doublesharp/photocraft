@@ -279,6 +279,7 @@ impl Session {
             self.subject_cache = Default::default();
             self.object_finder = Default::default();
         }
+        self.clear_stale_removal_preview();
         Ok(r)
     }
 

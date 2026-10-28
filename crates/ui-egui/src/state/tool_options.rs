@@ -20,6 +20,8 @@ pub struct ToolOptions {
     pub remove_after_each_stroke: bool,
     /// Local Remove backend: classical (legacy default), auto, or explicitly AI.
     pub remove_method: String,
+    /// Preview OSOR reconstruction of shadows and reflections within the captured context.
+    pub remove_effects: bool,
     pub feather: f32,
     /// linear | radial | angle | reflected | diamond
     pub gradient_style: String,
@@ -363,6 +365,7 @@ impl Default for ToolOptions {
             remove_new_layer: false,
             remove_after_each_stroke: true,
             remove_method: "classical".into(),
+            remove_effects: false,
             feather: 0.0,
             gradient_style: "linear".into(),
             gradient_reverse: false,

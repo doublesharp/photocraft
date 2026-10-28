@@ -19,7 +19,7 @@ pub(super) enum Method {
 pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
     let method = match p.get("method") {
         None => {
-            if ["modelId", "modelSha256", "removeEffects", "strokeSpecs", "seed"].iter().any(|k| p.get(*k).is_some()) {
+            if ["modelId", "modelSha256", "removeEffects", "preview", "strokeSpecs", "seed"].iter().any(|k| p.get(*k).is_some()) {
                 return Err(bad(CMD, "new Remove options require an explicit method"));
             }
             return Ok(());
@@ -35,6 +35,7 @@ pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
         "modelSha256",
         "seed",
         "removeEffects",
+        "preview",
         "points",
         "strokes",
         "size",
@@ -98,13 +99,25 @@ pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
     } else if let Some(points) = p.get("points") {
         check_points(points)?;
     }
-    for key in ["closeLoops", "sampleAllLayers", "newLayer", "removeEffects"] {
+    for key in ["closeLoops", "sampleAllLayers", "newLayer", "removeEffects", "preview"] {
         if p.get(key).is_some_and(|v| !v.is_boolean()) {
             return Err(bad(CMD, format!("`{key}` must be a boolean")));
         }
     }
-    if p.get("removeEffects").and_then(Value::as_bool) == Some(true) {
-        return Err(bad(CMD, "effect removal requires a preview and is not available yet"));
+    let preview = p.get("preview").and_then(Value::as_bool) == Some(true);
+    let effects = p.get("removeEffects").and_then(Value::as_bool) == Some(true);
+    if preview && method != "ai" {
+        return Err(bad(CMD, "Remove previews require the explicit ai method"));
+    }
+    if effects && (method != "ai" || !preview || p.get("modelId").and_then(Value::as_str).unwrap_or(&s.prefs().generative_remove.selected_model) != "osor-sdxl")
+    {
+        return Err(bad(CMD, "effect removal requires an OSOR-SDXL preview"));
+    }
+    if preview && (s.actions.playing > 0 || s.actions.script_depth > 0) {
+        return Err(bad(CMD, "Remove previews require explicit review and are unavailable during action or script playback"));
+    }
+    if preview && s.active().is_some_and(|st| crate::float_cmds::floating(st).is_some()) {
+        return Err(bad(CMD, "finish the floating selection before generating a Remove preview"));
     }
     if p.get("seed").is_some_and(|v| v.as_u64().is_none()) {
         return Err(bad(CMD, "`seed` must be a nonnegative integer"));
@@ -133,12 +146,15 @@ pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
     if let Some(model) = p.get("modelId") {
         let id = model.as_str().filter(|id| !id.is_empty() && id.len() <= 64).ok_or_else(|| bad(CMD, "`modelId` must be a known model id"))?;
         let service = s.removal_service();
-        let spec = service.catalog().iter().find(|m| m.id == id).ok_or_else(|| bad(CMD, format!("unknown removal model `{id}`")))?;
+        service.catalog().iter().find(|m| m.id == id).ok_or_else(|| bad(CMD, format!("unknown removal model `{id}`")))?;
         if method == "classical" {
             return Err(bad(CMD, "`modelId` cannot be used with the classical method"));
         }
-        if p.get("modelSha256").is_some_and(|value| value.as_str() != Some(spec.sha256)) {
-            return Err(bad(CMD, "model asset revision does not match the catalog"));
+        if let Some(value) = p.get("modelSha256") {
+            let hash = service.model_sha256(id).map_err(|error| bad(CMD, error.to_string()))?;
+            if value.as_str() != Some(hash.as_str()) {
+                return Err(bad(CMD, "model asset revision does not match the installed model"));
+            }
         }
     } else if p.get("modelSha256").is_some() {
         return Err(bad(CMD, "`modelSha256` requires `modelId`"));
@@ -268,7 +284,7 @@ pub(super) fn decide(s: &Session, p: &Value) -> Result<Method> {
         Some("the selected removal model is unknown".to_string())
     } else if !prefs.enabled_models.iter().any(|model| model == id) {
         Some("the selected removal model is disabled".to_string())
-    } else if !service.runtime_available() {
+    } else if !service.model_runtime_available(id) {
         Some("local AI inference is unavailable in this build".to_string())
     } else if let Some(reason) = context_reason(s, p) {
         Some(reason)
@@ -290,8 +306,8 @@ pub(super) fn decide(s: &Session, p: &Value) -> Result<Method> {
     if automatic {
         return Ok(Method::Classical { fallback: Some("the selected model is not yet qualified for Automatic Remove".into()) });
     }
-    let Some(spec) = spec else { return Err(bad(CMD, "unknown removal model")) };
-    Ok(Method::Ai { id: id.to_string(), sha256: spec.sha256.to_string(), automatic })
+    let sha256 = service.model_sha256(id).map_err(|error| bad(CMD, error.to_string()))?;
+    Ok(Method::Ai { id: id.to_string(), sha256, automatic })
 }
 
 /// Conservative allowance for all simultaneously live caller buffers. It is a per-operation
@@ -387,6 +403,10 @@ pub(super) fn work(
         .admit(&id, admission.transient_bytes, admission.budget_bytes)
         .map_err(|error| if matches!(error, photocraft_ml::Error::Cancelled) { EngineError::Cancelled } else { EngineError::Other(error.to_string()) })?;
     ctx.check()?;
+    let installed_hash = service.model_sha256(&id).map_err(|error| bad(CMD, error.to_string()))?;
+    if installed_hash != sha256 {
+        return Err(bad(CMD, "the installed model changed before AI Remove acquired admission"));
+    }
     let selection: Option<Vec<f32>> = doc.selection.as_ref().map(|selection| {
         let channels = selection.channels().max(1);
         selection.read_region(plan.window).chunks_exact(channels).filter_map(|pixel| pixel.first().copied()).collect()
@@ -451,12 +471,14 @@ pub(super) fn work(
     }
     let mask = hole.iter().map(|v| if *v { 1.0 } else { 0.0 }).collect();
     let input = RemovalInput { width: plan.window.width(), height: plan.window.height(), rgb, mask };
-    let RemovalOutput { rgb, inference_scale, load_ms, forward_ms } = permit
+    let RemovalOutput { rgb, edit_alpha, inference_scale, load_ms, forward_ms } = permit
         .infer(&input, ctx)
         .map_err(|e| if matches!(e, photocraft_ml::Error::Cancelled) { EngineError::Cancelled } else { EngineError::Other(e.to_string()) })?;
     ctx.check()?;
     if rgb.len() != input.rgb.len()
         || rgb.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        || edit_alpha.as_ref().is_some_and(|alpha| alpha.len() != hole.len() || alpha.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)))
+        || (id == "osor-sdxl" && edit_alpha.is_none())
         || !inference_scale.is_finite()
         || inference_scale <= 0.0
         || !load_ms.is_finite()
@@ -466,10 +488,13 @@ pub(super) fn work(
     {
         return Err(EngineError::Other("AI adapter returned invalid image data".into()));
     }
+    // OSOR RGB is already blended by its latent edit alpha. Selection coverage is the only
+    // extra blend: effects may change the full crop; ordinary removal stays inside the hole.
+    let remove_effects = p.get("removeEffects").and_then(Value::as_bool) == Some(true);
     let coverage = hole
         .iter()
         .enumerate()
-        .map(|(i, h)| if *h { selection.as_ref().and_then(|s| s.get(i)).copied().unwrap_or(1.0).clamp(0.0, 1.0) } else { 0.0 })
+        .map(|(i, h)| if remove_effects || *h { selection.as_ref().and_then(|s| s.get(i)).copied().unwrap_or(1.0).clamp(0.0, 1.0) } else { 0.0 })
         .collect();
     let metadata = json!({"effectiveMethod":"ai", "modelId":id, "modelSha256":sha256, "inferenceScale":inference_scale,
         "loadMs":load_ms, "forwardMs":forward_ms, "crop":damage_json(plan.window), "fallbackReason":Value::Null,

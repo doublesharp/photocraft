@@ -35,6 +35,7 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "toolOptions": app.ui.tool_options,
         "remove": {
             "pendingStrokes": app.remove_pending.len(),
+            "preview": app.session.removal_preview_status(),
             "method": app.ui.tool_options.remove_method,
             "lastResult": app.remove_last_result,
             "selectedModel": app.session.prefs().generative_remove.selected_model,

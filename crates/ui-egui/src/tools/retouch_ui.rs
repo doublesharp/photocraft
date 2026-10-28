@@ -138,12 +138,17 @@ pub(crate) fn finish_stroke_with_brush(
     let (cmd, mut p): (&str, Value) = match tool {
         Tool::SpotHealing => ("paint.spotHealing", json!({"type": o.spot_type, "sampleAllLayers": o.sample_all.spot_healing})),
         Tool::Remove => {
+            if app.session.removal_preview_document().is_some() {
+                app.ui.status = tl!("Preview ready. Apply or Cancel.").into();
+                app.ui.status_error = false;
+                return true;
+            }
             let base = remove_brush.unwrap_or(&app.session.tools.brush).clone();
             if !o.remove_after_each_stroke {
                 remove_pending_add_with_brush(app, points, &base);
                 return true;
             }
-            let mut params = remove_params(&o);
+            let mut params = removal_request(app, &o);
             let brush = photocraft_engine::retouch_cmds::stroke_brush(&base, &params);
             match photocraft_engine::retouch_cmds::remove_brush_snapshot(&brush) {
                 Ok(snapshot) => params["brush"] = snapshot,
@@ -230,7 +235,9 @@ pub(crate) fn report_remove_result(app: &mut PhotocraftApp, result: &Value) -> b
     let model = result.get("modelId").and_then(Value::as_str);
     let fallback = result.get("fallbackReason").and_then(Value::as_str);
     app.remove_last_result = Some(json!({"effectiveMethod": method, "modelId": model, "fallbackReason": fallback}));
-    app.ui.status = if let Some(reason) = fallback {
+    app.ui.status = if result.get("previewId").and_then(Value::as_u64).is_some() {
+        tl!("Preview ready. Apply or Cancel.").to_string()
+    } else if let Some(reason) = fallback {
         format!("{label}: {}", tl!(reason))
     } else if let Some(id) = model {
         format!("{label}: {id}")
@@ -243,7 +250,47 @@ pub(crate) fn report_remove_result(app: &mut PhotocraftApp, result: &Value) -> b
 
 /// `paint.remove` params from the options bar (without the strokes).
 fn remove_params(o: &crate::state::ToolOptions) -> Value {
-    json!({"sampleAllLayers": o.sample_all.remove, "newLayer": o.remove_new_layer, "method": o.remove_method})
+    let mut params = json!({"sampleAllLayers": o.sample_all.remove, "newLayer": o.remove_new_layer, "method": o.remove_method});
+    if o.remove_effects {
+        params["removeEffects"] = json!(true);
+        params["preview"] = json!(true);
+    }
+    params
+}
+
+fn removal_request(app: &PhotocraftApp, options: &crate::state::ToolOptions) -> Value {
+    let mut params = remove_params(options);
+    if options.remove_method == "ai" && app.session.prefs().generative_remove.selected_model == "osor-sdxl" {
+        params["preview"] = json!(true);
+    }
+    params
+}
+
+pub(crate) fn remove_preview_apply(app: &mut PhotocraftApp) {
+    let status = app.session.removal_preview_status();
+    match app.run("remove.preview.apply", json!({"id":status["id"]})) {
+        Ok(result) => {
+            report_remove_result(app, &result);
+        }
+        Err(error) => {
+            app.ui.status = error;
+            app.ui.status_error = true;
+        }
+    }
+}
+
+pub(crate) fn remove_preview_cancel(app: &mut PhotocraftApp) {
+    let status = app.session.removal_preview_status();
+    match app.run("remove.preview.discard", json!({"id":status["id"]})) {
+        Ok(_) => {
+            app.ui.status.clear();
+            app.ui.status_error = false;
+        }
+        Err(error) => {
+            app.ui.status = error;
+            app.ui.status_error = true;
+        }
+    }
 }
 
 /// The selection a queued Remove stroke was drawn against. A later selection must not
@@ -329,7 +376,7 @@ pub fn remove_pending_commit(app: &mut PhotocraftApp) -> bool {
     if !remove_pending_live(app) {
         return false;
     }
-    let mut p = remove_params(&app.ui.tool_options);
+    let mut p = removal_request(app, &app.ui.tool_options);
     p["strokes"] = json!(app.remove_pending);
     p["target"] = crate::canvas::paint_target(app);
     app.ui.status.clear();
@@ -592,6 +639,15 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
     {
         return false;
     }
+    if tool == Tool::Remove && app.session.removal_preview_document().is_some() {
+        opt(ui, tl!("Preview"));
+        if crate::widgets::primary_button(ui, tl!("Apply"), 64.0).clicked() {
+            remove_preview_apply(app);
+        } else if crate::widgets::secondary_button(ui, tl!("Cancel"), 64.0).clicked() {
+            remove_preview_cancel(app);
+        }
+        return true;
+    }
     let o = &mut app.ui.tool_options;
     match tool {
         Tool::SpotHealing => {
@@ -615,7 +671,21 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::checkbox(ui, &mut o.sample_all.remove, tl!("Sample All Layers"));
             crate::widgets::checkbox(ui, &mut o.remove_new_layer, tl!("Create a new layer"));
             crate::widgets::checkbox(ui, &mut o.remove_after_each_stroke, tl!("Remove after each stroke"));
-            if !app.remove_pending.is_empty() {
+            let osor = app.session.prefs().generative_remove.selected_model == "osor-sdxl" && o.remove_method == "ai";
+            if osor {
+                crate::widgets::checkbox(ui, &mut o.remove_effects, tl!("Shadows and reflections"));
+            } else {
+                o.remove_effects = false;
+            }
+            if app.session.removal_preview_document().is_some() {
+                ui.horizontal(|ui| {
+                    if crate::widgets::primary_button(ui, tl!("Apply"), 64.0).clicked() {
+                        remove_preview_apply(app);
+                    } else if crate::widgets::secondary_button(ui, tl!("Cancel"), 64.0).clicked() {
+                        remove_preview_cancel(app);
+                    }
+                });
+            } else if !app.remove_pending.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if crate::widgets::primary_button(ui, "✓", 32.0)
                         .on_hover_text(crate::i18n::fmt(tl!("Apply the removal ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))]))

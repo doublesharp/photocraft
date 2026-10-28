@@ -7,6 +7,7 @@ impl Session {
         if self.active_job().is_some() {
             return false;
         }
+        self.removal_preview = None;
         let keep_visibility = !self.visibility_undoable();
         let Some(st) = self.active_mut() else { return false };
         st.coalesce = None;
@@ -51,6 +52,7 @@ impl Session {
         if self.active_job().is_some() {
             return false;
         }
+        self.removal_preview = None;
         let keep_visibility = !self.visibility_undoable();
         let Some(st) = self.active_mut() else { return false };
         st.coalesce = None;
@@ -87,6 +89,7 @@ impl Session {
         if self.active_job().is_some() {
             return false;
         }
+        self.removal_preview = None;
         let keep_visibility = !self.visibility_undoable();
         let Some(st) = self.active_mut() else { return false };
         st.coalesce = None;

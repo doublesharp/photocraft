@@ -2488,7 +2488,7 @@ impl photocraft_ml::RemovalBackend for SolidRemoval {
         _: &dyn photocraft_ml::RemovalControl,
     ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
         self.0.lock().unwrap().push(input.clone());
-        Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+        Ok(photocraft_ml::RemovalOutput { edit_alpha: None, rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
     }
 }
 
@@ -2608,7 +2608,7 @@ fn remove_ai_cancellation_discards_late_output_and_keeps_runtime_busy_until_drai
         ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
             self.entered.send(()).unwrap();
             self.release.lock().unwrap().recv().unwrap();
-            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+            Ok(photocraft_ml::RemovalOutput { edit_alpha: None, rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
         }
     }
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -2746,7 +2746,7 @@ fn remove_ai_discards_result_if_untagged_working_profile_changes() {
         ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
             self.entered.send(()).unwrap();
             self.release.lock().unwrap().recv().unwrap();
-            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+            Ok(photocraft_ml::RemovalOutput { edit_alpha: None, rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
         }
     }
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -2806,7 +2806,7 @@ fn remove_ai_rejects_invalid_adapter_metadata_without_editing() {
             input: &photocraft_ml::RemovalInput,
             _: &dyn photocraft_ml::RemovalControl,
         ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
-            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: f64::NAN, forward_ms: 0.0 })
+            Ok(photocraft_ml::RemovalOutput { edit_alpha: None, rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: f64::NAN, forward_ms: 0.0 })
         }
     }
     let mut s = square_session(8, "rgb");
@@ -2888,7 +2888,7 @@ fn remove_ai_freezes_its_memory_budget_at_submission() {
         ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
             self.entered.send(()).unwrap();
             self.release.lock().unwrap().recv().unwrap();
-            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+            Ok(photocraft_ml::RemovalOutput { edit_alpha: None, rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
         }
     }
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -3087,4 +3087,337 @@ fn remove_ai_recorded_action_freezes_multiple_stroke_brushes() {
     assert_eq!(inputs.len(), 2);
     assert_eq!((inputs[0].width, inputs[0].height), (inputs[1].width, inputs[1].height));
     assert_eq!(inputs[0].mask, inputs[1].mask);
+}
+
+#[test]
+fn removal_preview_keeps_document_history_and_journal_until_explicit_apply() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    let before = s.active().unwrap().doc.clone();
+    let past = s.active().unwrap().history.past_len();
+    let journal = s.journal.clone();
+    let result = s.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai","preview":true})).unwrap();
+    assert_eq!(result["preview"], true);
+    assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+    assert_eq!(s.active().unwrap().history.past_len(), past);
+    assert_eq!(s.journal, journal);
+    let status = s.execute("remove.preview.status", json!({})).unwrap();
+    assert_eq!(status["ready"], true);
+    let applied = s.execute("remove.preview.apply", json!({"id":status["id"]})).unwrap();
+    assert_eq!(applied["applied"], true);
+    assert_eq!(s.active().unwrap().history.past_len(), past + 1);
+    assert_eq!(backend.0.lock().unwrap().len(), 1);
+    assert_eq!(s.journal.len(), journal.len() + 1);
+    assert_eq!(s.journal.last().unwrap().0, "paint.remove");
+    assert_eq!(s.journal.last().unwrap().1["preview"], true);
+    assert!(s.execute("remove.preview.apply", json!({})).is_err());
+    assert!(s.undo());
+    assert_eq!(s.active().unwrap().doc, before);
+}
+
+#[derive(Default)]
+struct OsorPreviewBackend(std::sync::atomic::AtomicUsize);
+impl photocraft_ml::RemovalBackend for OsorPreviewBackend {
+    fn ready(&self, id: &str) -> bool {
+        id == "osor-sdxl"
+    }
+    fn infer(
+        &self,
+        _: &str,
+        input: &photocraft_ml::RemovalInput,
+        _: &dyn photocraft_ml::RemovalControl,
+    ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Deliberately partial edit alpha: RGB has already been blended by the adapter.
+        Ok(photocraft_ml::RemovalOutput {
+            rgb: vec![0.8; input.rgb.len()],
+            edit_alpha: Some(vec![0.25; input.mask.len()]),
+            inference_scale: 1.0,
+            load_ms: 0.0,
+            forward_ms: 0.0,
+        })
+    }
+}
+
+fn enable_osor_preview(s: &mut Session) -> std::sync::Arc<OsorPreviewBackend> {
+    let backend = std::sync::Arc::new(OsorPreviewBackend::default());
+    s.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::default().with_backend(backend.clone())));
+    for (path, value) in [
+        ("generativeRemove.enabled", json!(true)),
+        ("generativeRemove.selectedModel", json!("osor-sdxl")),
+        ("generativeRemove.enabledModels", json!(["osor-sdxl"])),
+        ("performance.memoryUsageMb", json!(65536)),
+    ] {
+        s.execute("prefs.set", json!({"path":path,"value":value})).unwrap();
+    }
+    backend
+}
+
+fn osor_params(effects: bool, preview: bool) -> Value {
+    json!({"method":"ai","modelId":"osor-sdxl","points":[[46,30]],"size":10,"preview":preview,"removeEffects":effects})
+}
+
+#[test]
+fn removal_preview_osor_effect_respects_native_selection_and_never_blends_edit_alpha_twice() {
+    let _guard = lock_ai_tests();
+    for depth in [8, 16] {
+        for new_layer in [false, true] {
+            let mut s = square_session(depth, "rgb");
+            let backend = enable_osor_preview(&mut s);
+            s.edit("selection", |doc, _| {
+                let mut selection = Surface::new(PixelFormat::GRAY8);
+                selection.write_region(Rect::new(46, 30, 47, 31), &[1.0]);
+                selection.write_region(Rect::new(20, 30, 21, 31), &[0.5]);
+                doc.selection = Some(selection);
+                Ok(())
+            })
+            .unwrap();
+            let before = s.active().unwrap().doc.clone();
+            let active = s.active().unwrap().active_layer.unwrap();
+            let history = s.active().unwrap().history.past_len();
+            let mut params = osor_params(true, true);
+            params["newLayer"] = json!(new_layer);
+            let result = s.execute("paint.remove", params).unwrap();
+            let (shown, id) = s.removal_preview_document().unwrap();
+            assert_eq!(s.removal_preview_status()["id"], id);
+            assert_eq!(s.removal_preview_status()["modelId"], "osor-sdxl");
+            let output_layer = result.get("layer").and_then(Value::as_u64).map(LayerId).unwrap_or(active);
+            let output = shown.layer(output_layer).unwrap().surface().unwrap();
+            let hole = output.rgba(46, 30);
+            let effect = output.rgba(20, 30);
+            let protected = output.rgba(21, 30);
+            assert!((hole[0] - 0.8).abs() < tol(depth), "already blended RGB must not be multiplied by .25: {hole:?}");
+            if new_layer {
+                assert!((effect[0] - 0.8).abs() < tol(depth));
+                assert!((effect[3] - 128.0 / 255.0).abs() < 0.01);
+                assert_eq!(protected[3], 0.0);
+            } else {
+                let expected = 0.5 + (0.8 - 0.5) * (128.0 / 255.0);
+                assert!((effect[0] - expected).abs() < 0.01, "selection applies exactly once: {effect:?}");
+                assert_eq!(protected, rgba(&s, 21, 30));
+            }
+            assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+            assert_eq!(s.active().unwrap().history.past_len(), history);
+            s.execute("remove.preview.apply", json!({"id":id})).unwrap();
+            assert_eq!(s.active().unwrap().doc, shown, "Apply commits exactly the displayed candidate");
+            assert_eq!(s.active().unwrap().history.past_len(), history + 1);
+            assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 1, "Apply must not run inference again");
+            assert!(s.undo());
+            assert_eq!(s.active().unwrap().doc, before);
+        }
+    }
+}
+
+#[test]
+fn osor_normal_removal_remains_hole_limited_without_a_preview() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    enable_osor_preview(&mut s);
+    let outside = rgba(&s, 20, 30);
+    s.execute("paint.remove", osor_params(false, false)).unwrap();
+    assert_eq!(rgba(&s, 20, 30), outside);
+    assert!((rgba(&s, 46, 30)[0] - 0.8).abs() < 0.01);
+    assert!(s.removal_preview_document().is_none());
+}
+
+#[test]
+fn removal_preview_discard_releases_admission_without_history_or_journal() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    enable_osor_preview(&mut s);
+    let before = s.active().unwrap().doc.clone();
+    let history = s.active().unwrap().history.past_len();
+    let journal = s.journal.clone();
+    s.execute("paint.remove", osor_params(true, true)).unwrap();
+    let id = s.removal_preview_status()["id"].as_u64().unwrap();
+    let service = photocraft_ml::RemovalService::default().with_backend(std::sync::Arc::new(SolidRemoval::default()));
+    assert!(matches!(service.admit("lama", 0, u64::MAX), Err(photocraft_ml::Error::Busy)));
+    assert!(s.execute("remove.preview.discard", json!({"id":id+1})).is_err());
+    for command in ["remove.preview.apply", "remove.preview.discard", "remove.preview.status"] {
+        for malformed in [Value::Null, json!([]), json!("wrong"), json!({"id":"wrong"}), json!({"unknown":true})] {
+            assert!(s.execute(command, malformed).is_err());
+        }
+    }
+    assert_eq!(s.removal_preview_status()["ready"], true);
+    assert_eq!(s.execute("remove.preview.discard", json!({"id":id})).unwrap()["discarded"], true);
+    assert!(service.admit("lama", 0, u64::MAX).is_ok());
+    assert!(s.removal_preview_document().is_none());
+    assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+    assert_eq!(s.active().unwrap().history.past_len(), history);
+    assert_eq!(s.journal, journal);
+}
+
+#[test]
+fn removal_preview_rejects_changed_and_restored_context_and_releases_admission() {
+    let _guard = lock_ai_tests();
+    for scenario in 0..5 {
+        let mut s = square_session(8, "rgb");
+        enable_osor_preview(&mut s);
+        s.execute("paint.remove", osor_params(true, true)).unwrap();
+        let id = s.removal_preview_status()["id"].clone();
+        match scenario {
+            0 => {
+                s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":false})).unwrap();
+                s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":true})).unwrap();
+            }
+            1 => {
+                s.execute("edit.colorSettings", json!({"workingRgb":"display-p3"})).unwrap();
+                s.execute("edit.colorSettings", json!({"workingRgb":"srgb"})).unwrap();
+            }
+            2 => {
+                s.execute("channel.target.slot3", json!({})).unwrap();
+                s.execute("channel.target.composite", json!({})).unwrap();
+            }
+            3 => {
+                s.execute("select.rect", json!({"x":0,"y":0,"width":8,"height":8})).unwrap();
+                assert!(s.undo());
+            }
+            _ => {
+                s.execute("file.new", json!({"width":8,"height":8})).unwrap();
+                assert!(s.set_active(0));
+            }
+        }
+        let before = s.active().unwrap().doc.clone();
+        let history = s.active().unwrap().history.past_len();
+        assert!(s.removal_preview_document().is_none(), "scenario {scenario}");
+        assert!(s.execute("remove.preview.apply", json!({"id":id})).is_err(), "scenario {scenario}");
+        assert_eq!(s.active().unwrap().doc, before);
+        assert_eq!(s.active().unwrap().history.past_len(), history);
+        let service = photocraft_ml::RemovalService::default().with_backend(std::sync::Arc::new(SolidRemoval::default()));
+        assert!(service.admit("lama", 0, u64::MAX).is_ok(), "scenario {scenario} did not release admission");
+    }
+}
+
+#[test]
+fn removal_preview_rechecks_underlying_authority_and_refuses_effect_playback_before_inference() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_osor_preview(&mut s);
+    for script in [false, true] {
+        s.actions.playing = u8::from(!script);
+        s.actions.script_depth = u8::from(script);
+        let error = s.execute("paint.remove", osor_params(true, true)).unwrap_err().to_string();
+        assert!(error.contains("playback"), "{error}");
+    }
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    s.actions.playing = 0;
+    s.actions.script_depth = 0;
+    s.execute("paint.remove", osor_params(true, true)).unwrap();
+    let before = s.active().unwrap().doc.clone();
+    s.authorize = Some(|id, _| if id == "paint.remove" { Err(EngineError::Other("pixel edit denied".into())) } else { Ok(()) });
+    assert!(s.execute("remove.preview.apply", json!({})).unwrap_err().to_string().contains("denied"));
+    assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+    assert_eq!(s.removal_preview_status()["ready"], true);
+    s.execute("remove.preview.discard", json!({})).unwrap();
+    s.authorize = None;
+    for malformed in [json!({"preview":"yes"}), json!({"removeEffects":true,"preview":false}), json!({"method":"auto","preview":true})] {
+        let mut params = osor_params(true, true);
+        params.as_object_mut().unwrap().extend(malformed.as_object().unwrap().clone());
+        assert!(s.execute("paint.remove", params).is_err());
+    }
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn removal_preview_async_cancel_and_stale_publication_never_edit_or_retain_admission() {
+    use std::time::{Duration, Instant};
+    let _guard = lock_ai_tests();
+    for scenario in 0..4 {
+        let mut s = square_session(8, "rgb");
+        enable_osor_preview(&mut s);
+        let before = s.active().unwrap().doc.clone();
+        let history = s.active().unwrap().history.past_len();
+        let journal = s.journal.clone();
+        let job = match s.start("paint.remove", osor_params(true, true)).unwrap() {
+            crate::jobs::Started::Job(id) => id,
+            _ => panic!("expected background job"),
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !s.test_job_worker_finished(job) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(s.test_job_worker_finished(job));
+        match scenario {
+            0 => {
+                assert!(s.cancel_job(job));
+                assert!(s.wait_job(job).is_err());
+            }
+            1 => {
+                s.execute("remove.preview.discard", json!({})).unwrap();
+                assert!(s.wait_job(job).is_err());
+            }
+            2 => {
+                s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":false})).unwrap();
+                s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":true})).unwrap();
+                assert!(s.wait_job(job).is_err());
+            }
+            _ => {
+                assert_eq!(s.wait_job(job).unwrap()["preview"], true);
+                assert_eq!(s.removal_preview_status()["ready"], true);
+                s.execute("remove.preview.discard", json!({})).unwrap();
+            }
+        }
+        assert!(s.removal_preview_document().is_none());
+        assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+        assert_eq!(s.active().unwrap().history.past_len(), history);
+        assert_eq!(s.journal, journal);
+        let service = photocraft_ml::RemovalService::default().with_backend(std::sync::Arc::new(SolidRemoval::default()));
+        assert!(service.admit("lama", 0, u64::MAX).is_ok(), "scenario {scenario}");
+    }
+}
+
+#[test]
+fn removal_preview_records_one_canonical_effect_action_and_refuses_its_unreviewed_playback() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_osor_preview(&mut s);
+    s.execute("actions.record", json!({"name":"Effect removal"})).unwrap();
+    let result = s.execute("paint.remove", osor_params(true, true)).unwrap();
+    assert!(result.get("__removeBrushes").is_none());
+    let applied = s.execute("remove.preview.apply", json!({})).unwrap();
+    assert!(applied.get("__removeParams").is_none());
+    s.execute("actions.stop", json!({})).unwrap();
+    let action = s.execute("actions.get", json!({"action":"Effect removal"})).unwrap();
+    let steps = action["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "{action}");
+    assert_eq!(steps[0][0], "paint.remove");
+    let params = &steps[0][1];
+    assert_eq!(params["modelId"], "osor-sdxl");
+    assert!(params["modelSha256"].is_string());
+    assert_eq!(params["preview"], true);
+    assert_eq!(params["removeEffects"], true);
+    assert_eq!(params["brush"]["size"], 10.0);
+    assert!(params.get("previewId").is_none());
+    assert!(s.undo());
+    let before = s.active().unwrap().doc.clone();
+    let replay = s.execute("actions.play", json!({"action":"Effect removal"})).unwrap();
+    assert!(replay.to_string().contains("playback"), "{replay}");
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(s.removal_preview_document().is_none());
+    assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+    s.actions.playing = 1;
+    s.execute("paint.remove", osor_params(false, false)).unwrap();
+    s.actions.playing = 0;
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 2, "ordinary hole-only OSOR playback remains supported");
+}
+
+#[test]
+fn removal_preview_catalog_reports_per_model_runtime_and_osor_auto_stays_classical() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    enable_solid_removal(&mut s);
+    let list = s.execute("ai.models.list", json!({})).unwrap();
+    let models = list["models"].as_array().unwrap();
+    let lama = models.iter().find(|model| model["id"] == "lama").unwrap();
+    let osor = models.iter().find(|model| model["id"] == "osor-sdxl").unwrap();
+    assert_eq!(lama["available"], true);
+    assert_eq!(osor["available"], false, "another model adapter cannot make OSOR available");
+    assert_eq!(osor["artifactKind"], "bundle");
+    assert_eq!(osor["canDownload"], false);
+    let backend = enable_osor_preview(&mut s);
+    let mut params = osor_params(false, false);
+    params["method"] = json!("auto");
+    assert_eq!(s.execute("paint.remove", params).unwrap()["effectiveMethod"], "classical");
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

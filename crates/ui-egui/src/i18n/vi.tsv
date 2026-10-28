@@ -4014,3 +4014,11 @@ curves	Smooth	Làm mượt
 	Settings take effect immediately.	Cài đặt có hiệu lực ngay.
 	Local background reconstruction; 512 px context, CPU processing	Tái tạo nền cục bộ; vùng ngữ cảnh 512 px, xử lý bằng CPU
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Tái tạo cục bộ gọn nhẹ; quy trình MI-GAN cũ, vùng ngữ cảnh 512 px trên CPU
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Bóng và phản chiếu
+	Preview ready. Apply or Cancel.	Bản xem trước đã sẵn sàng. Áp dụng hoặc Hủy.
+	Install from folder…	Cài đặt từ thư mục…
+	Choose a local model bundle.	Chọn một gói mô hình cục bộ.
+	Local bundle	Gói cục bộ
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Xóa đối tượng và hiệu ứng cục bộ; nhập gói đã chuyển đổi theo lựa chọn rõ ràng, vùng ngữ cảnh tối đa 512 px

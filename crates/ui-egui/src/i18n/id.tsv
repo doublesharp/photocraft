@@ -3548,3 +3548,11 @@ curves	Smooth	Haluskan
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Rekonstruksi lokal ringkas; alur MI-GAN lama, konteks CPU 512 px
 	local AI processing is disabled	pemrosesan AI lokal dinonaktifkan
 	the selected model is not yet qualified for Automatic Remove	model yang dipilih belum memenuhi syarat untuk Penghapusan Otomatis
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Bayangan dan pantulan
+	Preview ready. Apply or Cancel.	Pratinjau siap. Terapkan atau Batal.
+	Install from folder…	Instal dari folder…
+	Choose a local model bundle.	Pilih paket model lokal.
+	Local bundle	Paket lokal
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Penghapusan objek dan efek lokal; impor eksplisit paket hasil konversi, konteks hingga 512 px

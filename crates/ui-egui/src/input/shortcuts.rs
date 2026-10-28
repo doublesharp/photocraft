@@ -764,6 +764,17 @@ fn handle_registry_and_tool_keys(app: &mut PhotocraftApp, ctx: &egui::Context, f
     // brush keys [ ] ⇧[ ⇧] (`tools.decreaseBrushSize`…) are commands, dispatched above with any
     // Keyboard Shortcuts override.
     let pressed = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
+    // A completed learned removal is shown without changing the document until confirmed.
+    if app.session.removal_preview_document().is_some() {
+        if pressed(Key::Enter) {
+            crate::retouch_ui::remove_preview_apply(app);
+            return true;
+        }
+        if pressed(Key::Escape) {
+            crate::retouch_ui::remove_preview_cancel(app);
+            return true;
+        }
+    }
     // Remove tool with strokes waiting (Remove after each stroke off): ↩ applies them, Esc drops them.
     if !app.remove_pending.is_empty() {
         if pressed(Key::Enter) {

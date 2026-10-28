@@ -19,6 +19,8 @@ pub fn model_dir() -> Option<PathBuf> {
 
 pub fn configure(session: &mut photocraft_engine::Session) {
     let service = RemovalService::new(model_dir()).with_downloader(Arc::new(HttpsModels::new()));
+    #[cfg(all(feature = "osor-metal", target_os = "macos"))]
+    let service = service.with_osor_backend(photocraft_ml::OsorBackend::Metal { ordinal: 0 });
     session.set_removal_service(Arc::new(service));
 }
 

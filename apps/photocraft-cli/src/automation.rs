@@ -105,7 +105,7 @@ mod tests {
             input: &photocraft_ml::RemovalInput,
             _: &dyn photocraft_ml::RemovalControl,
         ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
-            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.25; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.25; input.rgb.len()], edit_alpha: None, inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
         }
     }
 

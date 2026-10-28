@@ -4276,3 +4276,11 @@ cameraRaw	Dehaze	Odstranění oparu
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Kompaktní místní rekonstrukce; starší postup MI-GAN, kontext 512 px na CPU
 	local AI processing is disabled	místní zpracování AI je vypnuto
 	the selected model is not yet qualified for Automatic Remove	vybraný model zatím nesplňuje podmínky pro automatické odstranění
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Stíny a odrazy
+	Preview ready. Apply or Cancel.	Náhled je připraven. Zvolte Použít nebo Zrušit.
+	Install from folder…	Instalovat ze složky…
+	Choose a local model bundle.	Vyberte místní balíček modelu.
+	Local bundle	Místní balíček
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Místní odstranění objektů a efektů; výslovný import převedeného balíčku, kontext až 512 px

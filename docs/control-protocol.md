@@ -9,9 +9,34 @@ not an uncommitted document preview. Escape/outside clicks close it without reve
 See [Shape stroke options](shape-strokes.md) for limits, preview and persistence behavior.
 
 Remove options are available through `ui.set`: `removeMethod` (`classical|auto|ai`),
-`removeSampleAllLayers`, `removeNewLayer`, and `removeAfterEachStroke` (booleans).
-They do not install models or enable local AI processing; use the explicit preferences and
-model commands described in [Local AI Remove](generative-remove.md).
+`removeSampleAllLayers`, `removeNewLayer`, `removeAfterEachStroke`, and `removeEffects`
+(booleans). `removeEffects` is **Shadows and reflections**, supported by OSOR-SDXL Phase II
+only; it extends edits into the bounded context crop within the selection.
+These settings do not install models or enable local AI processing; use the explicit preferences
+and model commands described in [Local AI Remove](generative-remove.md).
+
+The Remove UI requests a preview for OSOR before committing. `ui.inspect.remove.preview` exposes
+its readiness and candidate ID; the canvas shows that exact candidate. Engine clients request
+the same lifecycle with `paint.remove {method:"ai", modelId:"osor-sdxl", preview:true, …}`.
+`removeEffects:true` requires `preview:true` and OSOR; other learned models remain hole-only.
+A completed inference returns `preview:true` and `previewId` without editing history.
+
+- `remove.preview.status {}` reports `ready`, `id`, captured source/target metadata, model identity,
+  crop and `removeEffects`; no options are accepted.
+- `remove.preview.apply {id?}` commits the shown candidate as one undo step. Pass its ID to reject
+  an unintended replacement; no inference rerun occurs.
+- `remove.preview.discard {id?}` drops it without editing. Apply/Cancel in the Remove options bar
+  (Enter/Esc) use these same commands.
+
+A preview retains its resource admission until it is applied or discarded. Source, target,
+selection, document, working-profile or settings changes invalidate it; stale and mismatched IDs
+are rejected. Preview commands are transient and are not recorded into actions; requesting or
+applying a preview during action or script playback returns a review-required error. Normal LaMa/MI-GAN
+action playback is unchanged. Model administration remains unavailable to untrusted automation
+and action/script playback. The catalog always lists `osor-sdxl`, but its per-model runtime
+availability depends on the native `osor` or `osor-metal` build feature. Trusted local import is
+`ai.models.import {modelId:"osor-sdxl", path:"/path/to/bundle"}`; it records a verified reference
+without copying or downloading weights. Removal deletes the reference only.
 
 The desktop app listens on `127.0.0.1:<port>` (loopback only). Start it with a token file so the credential is not exposed in the process command line:
 

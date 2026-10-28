@@ -4488,3 +4488,11 @@ navigator	Zoom	Zoom
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Reconstrucción local compacta; flujo MI-GAN anterior, contexto de 512 px en CPU
 	local AI processing is disabled	el procesamiento de IA local está desactivado
 	the selected model is not yet qualified for Automatic Remove	el modelo seleccionado aún no está cualificado para la eliminación automática
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Sombras y reflejos
+	Preview ready. Apply or Cancel.	Vista previa lista. Aplicar o Cancelar.
+	Install from folder…	Instalar desde carpeta…
+	Choose a local model bundle.	Elige un paquete de modelo local.
+	Local bundle	Paquete local
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Eliminación local de objetos y efectos; importación explícita de un paquete convertido, contexto de hasta 512 px

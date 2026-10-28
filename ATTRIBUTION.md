@@ -67,14 +67,21 @@ next to them.
 | `crates/ui-egui/src/theme.rs` (Soft Dark and Soft Light themes) | Original colour values and radii for two low-contrast themes on PhotoCraft's Studio layout; no third-party palette, file or code is used | PhotoCraft contributors | Original | Original work |
 | `crates/algo/data/libfacedetection.bin` (face detection weights, read by `crates/algo/src/faces.rs`, whose network code is a port of the library's) | libfacedetection CNN (YuNet design) weights and inference code, weights converted to half precision | Shiqi Yu | [ShiqiYu/libfacedetection](https://github.com/ShiqiYu/libfacedetection) (`src/facedetectcnn-data.cpp`, `facedetectcnn.cpp`, `facedetectcnn-model.cpp`) | BSD-3-Clause, [`LICENSE-libfacedetection.txt`](crates/algo/data/LICENSE-libfacedetection.txt) |
 
-### Optional downloaded Remove models (not bundled)
+### Optional OSOR runtime library
 
-The compiled catalog pins optional model data; binaries are stored in the user's model directory and are not committed or embedded. Artifact identity and preprocessing are in [`crates/ml/src/catalog.rs`](crates/ml/src/catalog.rs). The installed-model comparisons are bounded numerical checks, not a broad quality claim.
+| Component | Author | Source | License |
+|---|---|---|---|
+| `osor-rs` (opt-in `osor` / `osor-metal` build dependency) | osor-rs contributors | Live development checkout `/Users/justin/Workspaces/0xdoublesharp/osor-rs`; upstream remote and immutable release pin pending | MIT, `LICENSE-MIT` in that checkout; its OSOR reference and Candle notices are retained there. This code license does not license the model weights. |
+
+### Optional Remove models (not bundled)
+
+The compiled catalog pins downloadable ONNX model data. OSOR instead requires an explicitly selected local converted bundle and stores only its verified reference receipt. Weights are not committed or embedded. Artifact identity and preprocessing are in [`crates/ml/src/catalog.rs`](crates/ml/src/catalog.rs). The installed-model comparisons are bounded numerical checks, not a broad quality claim.
 
 | Catalog id | Model / author | Immutable artifact source | License |
 |---|---|---|---|
 | `lama` | LaMa, Samsung AI Center / LaMa contributors; ONNX export by Carve | [Carve/LaMa-ONNX at c3c0c9e468934d62e79c329e35d82dd09ff8c444](https://huggingface.co/Carve/LaMa-ONNX/tree/c3c0c9e468934d62e79c329e35d82dd09ff8c444) | Apache-2.0 model-card metadata; [upstream license](crates/ml/licenses/LICENSE-lama.txt). The converted artifact's hash is pinned; its original training-checkpoint export is not reproduced here. |
 | `migan-v1` | MI-GAN, Picsart AI Research | [andraniksargsyan/migan at 406830d0fa60666da0071c342ad2fbc8f30c5c64](https://huggingface.co/andraniksargsyan/migan/tree/406830d0fa60666da0071c342ad2fbc8f30c5c64) | MIT; [upstream license](crates/ml/licenses/LICENSE-migan.txt) from Picsart-AI-Research/MI-GAN at `2b793c5ece43f4253e32d4afc257120a5deed6f5`. This is the older v1 artifact, not the v2 pipeline. |
+| `osor-sdxl` | OSOR-SDXL-Inpainting Phase II, OSOR authors; SDXL Inpainting base model | User-supplied four-file converted bundle; exact manifest and tensor hashes pinned at local import. [Upstream model card](https://huggingface.co/QinmingZhou/OSOR), [reference code](https://github.com/Zhouqm-Git/osor) | CreativeML Open RAIL++-M, including use restrictions, for the SDXL weights and base model. No weights are bundled or downloaded by PhotoCraft; the MIT source-code license does not override model terms. |
 
 ### Optional build input: craft-fonts (not files in this repo)
 

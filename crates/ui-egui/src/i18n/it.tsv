@@ -4633,3 +4633,11 @@ shape	Appearance	Aspetto
 	Settings take effect immediately.	Le impostazioni hanno effetto immediato.
 	Local background reconstruction; 512 px context, CPU processing	Ricostruzione locale dello sfondo; contesto di 512 px, elaborazione CPU
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Ricostruzione locale compatta; precedente pipeline MI-GAN, contesto di 512 px su CPU
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Ombre e riflessi
+	Preview ready. Apply or Cancel.	Anteprima pronta. Applica o Annulla.
+	Install from folder…	Installa da cartella…
+	Choose a local model bundle.	Scegli un pacchetto di modello locale.
+	Local bundle	Pacchetto locale
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Rimozione locale di oggetti ed effetti; importazione esplicita di un pacchetto convertito, contesto fino a 512 px

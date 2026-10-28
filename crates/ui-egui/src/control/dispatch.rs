@@ -268,6 +268,7 @@ struct ToolSet {
     remove_sample_all: Option<bool>,
     remove_new_layer: Option<bool>,
     remove_after_each: Option<bool>,
+    remove_effects: Option<bool>,
     gradient_classic: Option<bool>,
     stroke_trace: Option<&'static str>,
     eyedropper_size: Option<u32>,
@@ -296,6 +297,7 @@ impl ToolSet {
             remove_sample_all: bool_field(p, "removeSampleAllLayers")?,
             remove_new_layer: bool_field(p, "removeNewLayer")?,
             remove_after_each: bool_field(p, "removeAfterEachStroke")?,
+            remove_effects: bool_field(p, "removeEffects")?,
             gradient_classic: bool_field(p, "gradientClassic")?,
             stroke_trace: stroke_trace_param(p)?,
             // The Eyedropper's options bar (#1649): Sample Size, Sample, Show Sampling Ring.
@@ -359,6 +361,9 @@ impl ToolSet {
         }
         if let Some(after_each) = self.remove_after_each {
             app.ui.tool_options.remove_after_each_stroke = after_each;
+        }
+        if let Some(effects) = self.remove_effects {
+            app.ui.tool_options.remove_effects = effects;
         }
     }
 

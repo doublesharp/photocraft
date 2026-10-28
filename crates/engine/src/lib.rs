@@ -35,6 +35,7 @@ pub mod prefs;
 pub mod preset_store;
 pub mod presets;
 pub mod proof_sim;
+mod removal_preview;
 pub mod select_mask_edits;
 pub mod shell_commands;
 pub mod shortcut_sets;
@@ -225,6 +226,8 @@ pub struct Session {
     pub prefs: prefs::PrefsStore,
     /// Shared local model service injected by the native application.
     removal_service: Arc<photocraft_ml::RemovalService>,
+    removal_preview: Option<removal_preview::Preview>,
+    removal_preview_sequence: u64,
     /// Release checks use an injected platform transport; no network I/O in the engine.
     pub updates: updates_cmds::Updates,
     /// Edit menu state: Fade source, custom shape library (see `edit_menu_cmds`).

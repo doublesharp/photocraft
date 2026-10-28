@@ -1,5 +1,7 @@
 //! Managed, content-pinned model files. One service admits one resource owner at a time.
 mod capability;
+#[cfg(feature = "osor")]
+pub(crate) mod osor_reference;
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -49,6 +51,12 @@ pub(crate) struct NativeService {
     directory: Option<PathBuf>,
     downloader: Mutex<Option<Arc<dyn ModelDownloader>>>,
     state: Mutex<State>,
+    #[cfg(feature = "osor")]
+    osor_backend: Mutex<crate::OsorBackend>,
+    #[cfg(feature = "osor")]
+    osor_verified: Mutex<Option<osor_reference::Verified>>,
+    #[cfg(feature = "osor")]
+    osor_invalid: Mutex<Option<String>>,
 }
 
 // Services can be constructed for separate sessions. They must not each admit a separate
@@ -67,7 +75,17 @@ impl Drop for Lease {
 
 impl NativeService {
     pub fn new(directory: Option<PathBuf>) -> Self {
-        Self { directory, downloader: Mutex::new(None), state: Mutex::new(State::default()) }
+        Self {
+            directory,
+            downloader: Mutex::new(None),
+            state: Mutex::new(State::default()),
+            #[cfg(feature = "osor")]
+            osor_backend: Mutex::new(crate::OsorBackend::Cpu),
+            #[cfg(feature = "osor")]
+            osor_verified: Mutex::new(None),
+            #[cfg(feature = "osor")]
+            osor_invalid: Mutex::new(None),
+        }
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -79,6 +97,10 @@ impl NativeService {
     }
 
     pub(crate) fn prepare_model(&self, id: &str, injected: bool) {
+        #[cfg(feature = "osor")]
+        if injected || id != "osor-sdxl" {
+            crate::osor_runtime::clear_cache();
+        }
         #[cfg(feature = "native-inference")]
         {
             let mut cached = CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -88,6 +110,47 @@ impl NativeService {
         }
         #[cfg(not(feature = "native-inference"))]
         let _ = (id, injected);
+    }
+
+    #[cfg(feature = "osor")]
+    pub fn osor_runtime_available(&self) -> bool {
+        let backend = *self.osor_backend.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(all(feature = "osor-metal", target_os = "macos"))]
+        {
+            matches!(backend, crate::OsorBackend::Cpu | crate::OsorBackend::Metal { .. })
+        }
+        #[cfg(not(all(feature = "osor-metal", target_os = "macos")))]
+        {
+            matches!(backend, crate::OsorBackend::Cpu)
+        }
+    }
+
+    #[cfg(feature = "osor")]
+    pub fn model_sha256(&self) -> Result<String> {
+        osor_reference::identity(self)
+    }
+
+    #[cfg(feature = "osor")]
+    pub fn set_osor_backend(&self, backend: crate::OsorBackend) {
+        *self.osor_backend.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = backend;
+    }
+
+    #[cfg(feature = "osor")]
+    pub fn infer_osor(&self, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
+        let reference = match osor_reference::verify(self, ctl) {
+            Ok(reference) => reference,
+            Err(error) => {
+                if !matches!(error, Error::Cancelled) {
+                    *self.osor_invalid.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.to_string());
+                }
+                return Err(error);
+            }
+        };
+        let backend = *self.osor_backend.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let out = crate::osor_runtime::infer(&reference.reference, backend, input, ctl)?;
+        check(ctl)?;
+        validate_output(input, &out)?;
+        Ok(out)
     }
 
     pub fn set_downloader(&self, downloader: Arc<dyn ModelDownloader>) {
@@ -105,7 +168,7 @@ impl NativeService {
     }
 
     fn file_name(model: &ModelSpec) -> String {
-        format!("{}-{}.onnx", model.id, model.sha256)
+        if model.id == "osor-sdxl" { "osor-sdxl-reference.json".into() } else { format!("{}-{}.onnx", model.id, model.sha256) }
     }
 
     // Path exposure is retained only for fixture assertions; production I/O uses StoreDir.
@@ -115,11 +178,25 @@ impl NativeService {
         self.directory.as_deref().map(|d| d.join(Self::file_name(model))).ok_or_else(|| Error::Storage("model storage is unavailable".into()))
     }
 
-    pub fn status(&self, runtime: bool) -> Vec<ModelStatus> {
+    pub fn status(&self, runtime: impl Fn(&str) -> bool) -> Vec<ModelStatus> {
         let busy = BUSY.load(Ordering::Acquire);
         crate::catalog::CATALOG
             .iter()
             .map(|model| {
+                let runtime = runtime(model.id);
+                if model.id == "osor-sdxl" {
+                    #[cfg(feature = "osor")]
+                    return osor_reference::status(self, runtime, busy);
+                    #[cfg(not(feature = "osor"))]
+                    return ModelStatus {
+                        id: model.id.into(),
+                        installed: self.directory(false).ok().is_some_and(|dir| dir.open_regular(OsStr::new(&Self::file_name(model))).is_ok()),
+                        available: false,
+                        busy,
+                        verified: false,
+                        reason: Some("OSOR inference requires the native osor feature and an explicitly imported local bundle".into()),
+                    };
+                }
                 let fingerprint = self.directory(false).ok().and_then(|dir| {
                     let file = dir.open_regular(OsStr::new(&Self::file_name(model))).ok()?;
                     dir.ensure_attached().ok()?;
@@ -187,6 +264,12 @@ impl NativeService {
     pub fn import(&self, model: &'static ModelSpec, path: &Path, ctl: &dyn RemovalControl) -> Result<()> {
         let _lease = self.begin()?;
         check(ctl)?;
+        if model.id == "osor-sdxl" {
+            #[cfg(feature = "osor")]
+            return osor_reference::import(self, path, ctl);
+            #[cfg(not(feature = "osor"))]
+            return Err(Error::Unavailable);
+        }
         let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let name = path.file_name().ok_or_else(|| Error::Storage("select a regular model file".into()))?;
         let source_dir = StoreDir::acquire(parent, false)?;
@@ -201,6 +284,9 @@ impl NativeService {
     pub fn install(&self, model: &'static ModelSpec, ctl: &dyn RemovalControl) -> Result<()> {
         let _lease = self.begin()?;
         check(ctl)?;
+        if model.id == "osor-sdxl" {
+            return Err(Error::Download("OSOR is local-import only; select a converted bundle directory".into()));
+        }
         let dir = self.directory(true)?;
         match self.verify_in(&dir, model, ctl) {
             Ok(_) => return Ok(()),
@@ -292,6 +378,10 @@ impl NativeService {
 
     pub fn remove(&self, model: &'static ModelSpec) -> Result<()> {
         let _lease = self.begin()?;
+        #[cfg(feature = "osor")]
+        if model.id == "osor-sdxl" {
+            return osor_reference::remove(self);
+        }
         self.state().verified.remove(model.id);
         let dir = match self.directory(false) {
             Ok(dir) => dir,
@@ -385,7 +475,8 @@ impl RemovalControl for CommittedControl<'_> {
 }
 
 fn validate_output(input: &RemovalInput, out: &RemovalOutput) -> Result<()> {
-    if out.rgb.len() != input.rgb.len()
+    if out.edit_alpha.as_ref().is_some_and(|alpha| alpha.len() != input.mask.len() || alpha.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)))
+        || out.rgb.len() != input.rgb.len()
         || out.rgb.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
         || !out.inference_scale.is_finite()
         || !(0.0..=1.0).contains(&out.inference_scale)

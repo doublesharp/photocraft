@@ -26,6 +26,8 @@ fn remember_result(f: &mut Map<String, Value>, result: Result<Value, String>) {
             let message = if let Some(job) = result.get("job").and_then(Value::as_u64) {
                 f.insert("job".into(), json!(job));
                 tl!("The model operation continues while this window is closed.")
+            } else if result.get("fileDialog").and_then(Value::as_str) == Some("folder") {
+                tl!("Choose a local model bundle.")
             } else if result.get("fileDialog").is_some() {
                 tl!("Choose a model file to install.")
             } else {
@@ -67,7 +69,12 @@ fn enabled_model(app: &mut PhotocraftApp, id: &str, enabled: bool) -> Result<Val
 /// Ask for the artifact's path only: hashing, copying and validation run on the engine worker.
 fn import_model(app: &mut PhotocraftApp, id: &str) -> Result<Value, String> {
     let id = id.to_string();
-    app.ask_file(FileDialogRequest::Open { multiple: false, initial_dir: None, extensions: Some(vec!["onnx".into()]) }, move |app, answer| {
+    let request = if id == "osor-sdxl" {
+        FileDialogRequest::Folder { initial_dir: None }
+    } else {
+        FileDialogRequest::Open { multiple: false, initial_dir: None, extensions: Some(vec!["onnx".into()]) }
+    };
+    app.ask_file(request, move |app, answer| {
         let result = match answer {
             FileDialogAnswer::Paths(paths) => match paths.first() {
                 Some(path) => model_command(app, "ai.models.import", json!({"modelId": id, "path": path})),
@@ -124,13 +131,15 @@ fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>
             ui.push_id(id, |ui| {
                 ui.group(|ui| {
                     ui.set_min_width(ui.available_width());
+                    let available = flag(&model, "available");
                     let installed = flag(&model, "installed");
                     let busy = flag(&model, "busy");
                     let mut model_enabled = enabled_ids.iter().any(|value| value == id);
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new(text(&model, "label")).strong());
                         let bytes = model.get("bytes").and_then(Value::as_u64).unwrap_or(0);
-                        ui.label(RichText::new(format!("{:.0} MB", bytes as f64 / 1_000_000.0)).color(t.text_dim));
+                        let size = if id == "osor-sdxl" { tl!("Local bundle").to_string() } else { format!("{:.0} MB", bytes as f64 / 1_000_000.0) };
+                        ui.label(RichText::new(size).color(t.text_dim));
                         let readiness = if busy {
                             tl!("In use")
                         } else if installed {
@@ -177,11 +186,12 @@ fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>
                     // An uninstalled model is intentionally eligible for installation.
                     ui.add_enabled_ui(available && management && !busy, |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            if !installed && ui.button(tl!("Download")).clicked() {
+                            if !installed && flag(&model, "canDownload") && ui.button(tl!("Download")).clicked() {
                                 let result = model_command(app, "ai.models.install", json!({"modelId": id}));
                                 remember_result(f, result);
                             }
-                            if ui.add_enabled(app.services.file_dialog.is_some(), egui::Button::new(tl!("Install from file…"))).clicked() {
+                            let install_label = if id == "osor-sdxl" { tl!("Install from folder…") } else { tl!("Install from file…") };
+                            if ui.add_enabled(app.services.file_dialog.is_some(), egui::Button::new(install_label)).clicked() {
                                 let result = import_model(app, id);
                                 remember_result(f, result);
                             }
@@ -301,7 +311,7 @@ mod tests {
             status: json!({"runtimeAvailable":true,"managementAvailable":true,"models":[{
                 "id":"migan-v1", "label":"MI-GAN v1", "description":"Compact model", "bytes":29546882,
                 "license":"MIT", "source":"https://example.org/source", "url":"https://example.org/model",
-                "installed":false, "available":false, "busy":false
+                "installed":false, "available":true, "canDownload":true, "busy":false
             }]}),
         }
     }
@@ -324,6 +334,22 @@ mod tests {
         h.run_steps(3);
         assert_eq!(h.state().app.session.prefs_value().pointer("/generativeRemove/selectedModel"), Some(&json!("migan-v1")));
         assert!(!h.state().app.session.has_jobs(), "selecting a model does not download it");
+    }
+
+    #[test]
+    fn model_availability_is_per_adapter() {
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        let mut state = fixture();
+        state.status["models"][0]["available"] = json!(false);
+        let mut h = Harness::builder()
+            .with_size(vec2(700.0, 650.0))
+            .build_ui_state(|ui, state: &mut ModelUi| render(&mut state.app, ui, &mut state.fields, &state.status), state);
+        h.run_steps(3);
+        assert!(h.get_by_label("Download").accesskit_node().is_disabled(), "another compiled adapter must not enable this model");
+        assert!(h.get_by_label("Enable this process").accesskit_node().is_disabled());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -429,5 +455,18 @@ mod tests {
         h.state_mut().status["models"][0]["reason"] = json!("Model storage is read-only");
         h.run_steps(3);
         h.get_by_label("Model storage is read-only");
+    }
+}
+
+#[cfg(test)]
+mod osor_chooser_tests {
+    use super::*;
+    #[test]
+    fn osor_bundle_import_asks_for_a_directory() {
+        let services = crate::Services { file_dialog: Some(Box::new(|_, _, _| {})), ..Default::default() };
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+        let reply = import_model(&mut app, "osor-sdxl").unwrap();
+        assert_eq!(reply["fileDialog"], "folder", "OSOR is a verified four-file bundle");
+        assert!(!app.session.has_jobs(), "choosing a bundle starts no inference");
     }
 }

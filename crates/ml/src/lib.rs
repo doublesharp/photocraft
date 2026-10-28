@@ -9,10 +9,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod catalog;
-#[cfg(any(test, all(not(target_arch = "wasm32"), feature = "native-inference")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "osor"))]
+mod osor_runtime;
+#[cfg(any(test, all(not(target_arch = "wasm32"), any(feature = "native-inference", feature = "osor"))))]
 mod resample;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-inference"))]
 mod runtime;
+#[cfg(all(not(target_arch = "wasm32"), feature = "osor"))]
+pub use osor_rs::Backend as OsorBackend;
 #[cfg(not(target_arch = "wasm32"))]
 mod store;
 
@@ -91,6 +95,9 @@ pub struct RemovalInput {
 #[derive(Debug)]
 pub struct RemovalOutput {
     pub rgb: Vec<f32>,
+    /// Learned source-sized edit support. OSOR RGB is already latent blended; do not
+    /// multiply this alpha into RGB a second time. None for adapters without learned support.
+    pub edit_alpha: Option<Vec<f32>>,
     /// Model pixels per input pixel; values below 1 disclose downsampling.
     pub inference_scale: f32,
     pub load_ms: f64,
@@ -134,7 +141,7 @@ impl RemovalPermit<'_> {
     /// Run the admitted model. The exclusive borrow prevents overlapping forwards on one permit.
     pub fn infer(&mut self, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
         input.validate()?;
-        let minimum = input.minimum_buffer_bytes()?;
+        let minimum = input.minimum_buffer_bytes_for(self.model.id)?;
         if minimum > self.transient_bytes {
             return Err(Error::InvalidInput("removal input and output exceed the admitted transient buffer bound".into()));
         }
@@ -146,6 +153,10 @@ impl RemovalPermit<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(backend) = &self.service.backend {
             return self.service.native.infer_backend(backend.as_ref(), self.model.id, input, ctl);
+        }
+        #[cfg(all(not(target_arch = "wasm32"), feature = "osor"))]
+        if self.model.id == "osor-sdxl" {
+            return self.service.native.infer_osor(input, ctl);
         }
         #[cfg(all(not(target_arch = "wasm32"), feature = "native-inference"))]
         {
@@ -185,7 +196,7 @@ impl RemovalService {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if !self.runtime_available() {
+            if !self.model_runtime_available(model.id) {
                 return Err(Error::Unavailable);
             }
             let lease = self.native.begin()?;
@@ -227,12 +238,38 @@ impl RemovalService {
         }
     }
 
+    /// Select OSOR compute explicitly; CPU is the default. No process environment is read.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "osor"))]
+    pub fn with_osor_backend(self, backend: OsorBackend) -> Self {
+        self.native.set_osor_backend(backend);
+        self
+    }
+
+    /// Whether this build supports the selected adapter (separate from installation).
+    pub fn model_runtime_available(&self, id: &str) -> bool {
+        if catalog::find(id).is_err() {
+            return false;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(backend) = &self.backend {
+            return backend.ready(id);
+        }
+        if id == "osor-sdxl" {
+            #[cfg(all(not(target_arch = "wasm32"), feature = "osor"))]
+            let available = self.native.osor_runtime_available();
+            #[cfg(not(all(not(target_arch = "wasm32"), feature = "osor")))]
+            let available = false;
+            return available;
+        }
+        cfg!(all(not(target_arch = "wasm32"), feature = "native-inference"))
+    }
+
     pub fn runtime_available(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         if self.backend.is_some() {
             return true;
         }
-        cfg!(all(not(target_arch = "wasm32"), feature = "native-inference"))
+        cfg!(all(not(target_arch = "wasm32"), any(feature = "native-inference", feature = "osor")))
     }
 
     pub fn management_available(&self) -> bool {
@@ -246,6 +283,23 @@ impl RemovalService {
         }
     }
 
+    /// Immutable catalog artifact hash, or the explicitly imported OSOR manifest hash.
+    /// Injected adapters retain the catalog identity supplied by their test contract.
+    pub fn model_sha256(&self, model_id: &str) -> Result<String> {
+        let model = catalog::find(model_id)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.backend.is_some() {
+            return Ok(model.sha256.into());
+        }
+        if model.id == "osor-sdxl" {
+            #[cfg(all(not(target_arch = "wasm32"), feature = "osor"))]
+            return self.native.model_sha256();
+            #[cfg(not(all(not(target_arch = "wasm32"), feature = "osor")))]
+            return Err(Error::Unavailable);
+        }
+        Ok(model.sha256.into())
+    }
+
     pub fn catalog(&self) -> &'static [ModelSpec] {
         catalog::CATALOG
     }
@@ -253,7 +307,7 @@ impl RemovalService {
     pub fn status(&self) -> Vec<ModelStatus> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut statuses = self.native.status(self.runtime_available());
+            let mut statuses = self.native.status(|id| self.model_runtime_available(id));
             if let Some(backend) = &self.backend {
                 for status in &mut statuses {
                     if backend.ready(&status.id) {
@@ -276,7 +330,7 @@ impl RemovalService {
         catalog::find(model_id)?;
         input.validate()?;
         check(ctl)?;
-        let mut permit = self.admit(model_id, input.minimum_buffer_bytes()?, u64::MAX)?;
+        let mut permit = self.admit(model_id, input.minimum_buffer_bytes_for(model_id)?, u64::MAX)?;
         permit.infer(input, ctl)
     }
 
@@ -323,10 +377,10 @@ impl RemovalService {
 }
 
 impl RemovalInput {
-    fn minimum_buffer_bytes(&self) -> Result<u64> {
+    fn minimum_buffer_bytes_for(&self, model_id: &str) -> Result<u64> {
         u64::from(self.width)
             .checked_mul(u64::from(self.height))
-            .and_then(|n| n.checked_mul(28))
+            .and_then(|n| n.checked_mul(if model_id == "osor-sdxl" { 32 } else { 28 }))
             .ok_or_else(|| Error::InvalidInput("removal buffer estimate overflow".into()))
     }
 

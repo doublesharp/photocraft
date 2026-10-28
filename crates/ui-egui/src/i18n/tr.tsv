@@ -4244,3 +4244,11 @@ cameraData	Lens	Lens
 	Settings take effect immediately.	Ayarlar hemen uygulanır.
 	Local background reconstruction; 512 px context, CPU processing	Yerel arka plan yeniden oluşturma; 512 px bağlam, CPU işleme
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Kompakt yerel yeniden oluşturma; eski MI-GAN iş hattı, CPU’da 512 px bağlam
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Gölgeler ve yansımalar
+	Preview ready. Apply or Cancel.	Önizleme hazır. Uygula veya İptal.
+	Install from folder…	Klasörden yükle…
+	Choose a local model bundle.	Yerel bir model paketi seçin.
+	Local bundle	Yerel paket
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Yerel nesne ve efekt kaldırma; dönüştürülmüş paketin açıkça içe aktarılması gerekir, en fazla 512 px bağlam

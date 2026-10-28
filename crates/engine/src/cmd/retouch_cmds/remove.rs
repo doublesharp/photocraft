@@ -284,6 +284,8 @@ pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     let budget_bytes = u64::from(s.prefs().performance.memory_usage_mb).saturating_mul(1024 * 1024);
     let admission = smart::admission(&plan, &method, &service, budget_bytes)?;
     let doc = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
+    let preview_capture = (p.get("preview").and_then(Value::as_bool) == Some(true)).then(|| crate::removal_preview::Capture::new(s)).transpose()?;
+    let preview_source = doc.clone();
     let used_working_profile = doc.icc_profile.is_none();
     let working_rgb = s.color.settings.working_rgb.clone();
     let p = p.clone();
@@ -321,6 +323,34 @@ pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
                     // Content owns the reservation until its output buffers are dropped.
                     if used_working_profile && s.color.settings.working_rgb != working_rgb {
                         return Err(bad(CMD, "the working colour profile changed while AI Remove was running"));
+                    }
+                    if let Some(capture) = preview_capture {
+                        let mut candidate_doc = (*preview_source).clone();
+                        let (damage, layer) = smart::apply(&mut candidate_doc, id, &p, content.rect, &content.rgb, &content.coverage, new_layer)?;
+                        let mut result = json!({"damage":damage_json(damage)});
+                        if let Some(id) = layer {
+                            result["layer"] = json!(id.0);
+                        }
+                        if let (Some(target), Some(metadata)) = (result.as_object_mut(), outcome.metadata.and_then(|value| value.as_object().cloned())) {
+                            target.extend(metadata);
+                        }
+                        if let Some(brushes) = resolved_brushes {
+                            result["__removeBrushes"] = Value::Array(brushes);
+                        }
+                        let params = crate::jobs::canonical_remove_params(CMD, p.clone(), &mut result);
+                        let active_layer = layer.or_else(|| s.active().and_then(|st| st.active_layer));
+                        return crate::removal_preview::publish(
+                            s,
+                            capture,
+                            crate::removal_preview::Candidate {
+                                doc: std::sync::Arc::new(candidate_doc),
+                                _content: Box::new(content),
+                                active_layer,
+                                crop: damage,
+                                params,
+                                result,
+                            },
+                        );
                     }
                     let (damage, layer) = s.edit(label, |doc, active| {
                         let result = smart::apply(doc, id, &p, content.rect, &content.rgb, &content.coverage, new_layer)?;

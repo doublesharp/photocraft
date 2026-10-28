@@ -4430,3 +4430,11 @@ cameraRaw	Yellow	Sárga
 	Settings take effect immediately.	A beállítások azonnal érvényesek.
 	Local background reconstruction; 512 px context, CPU processing	Helyi háttérrekonstrukció; 512 px környezet, CPU-feldolgozás
 	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Kompakt helyi rekonstrukció; régebbi MI-GAN-folyamat, 512 px környezet CPU-n
+
+# Local OSOR bundle and Remove preview
+	Shadows and reflections	Árnyékok és tükröződések
+	Preview ready. Apply or Cancel.	Az előnézet kész. Alkalmazza vagy szakítsa meg.
+	Install from folder…	Telepítés mappából…
+	Choose a local model bundle.	Válasszon egy helyi modellcsomagot.
+	Local bundle	Helyi csomag
+	Local object and effect removal; explicit converted bundle import, up to 512 px context	Objektumok és hatások helyi eltávolítása; átalakított csomag kifejezett importálása, legfeljebb 512 px környezet

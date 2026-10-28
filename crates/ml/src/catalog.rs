@@ -1,7 +1,8 @@
 use crate::{Error, Result};
 use serde::Serialize;
 
-/// Exact runtime artifact identity; model names alone never select an arbitrary ONNX file.
+/// Exact runtime artifact identity. OSOR uses a locally pinned reference receipt rather than
+/// a redistributed artifact, so its catalog bytes/hash/URL are empty until explicit import.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelSpec {
@@ -37,6 +38,19 @@ impl ModelStatus {
 }
 
 pub(crate) const CATALOG: &[ModelSpec] = &[
+    ModelSpec {
+        id: "osor-sdxl",
+        label: "OSOR-SDXL Phase II",
+        description: "Local object and effect removal; explicit converted bundle import, up to 512 px context",
+        bytes: 0,
+        sha256: "",
+        url: "",
+        license: "CreativeML Open RAIL++-M (weights; use restrictions)",
+        source: "https://github.com/Zhouqm-Git/osor",
+        backend: "osor-rs CPU / optional Metal",
+        input_size: 512,
+        memory_mib: 40960,
+    },
     ModelSpec {
         id: "lama",
         label: "LaMa",

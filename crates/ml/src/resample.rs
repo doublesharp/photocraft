@@ -4,6 +4,7 @@ use crate::{Error, RemovalInput, Result};
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Geometry {
     pub side: usize,
+    pub rows: usize,
     pub width: usize,
     pub height: usize,
     pub resized_width: usize,
@@ -25,6 +26,7 @@ impl Geometry {
         let resized_height = (f64::from(height) * scale).round().clamp(1., f64::from(side)) as usize;
         Ok(Self {
             side: side as usize,
+            rows: side as usize,
             width: width as usize,
             height: height as usize,
             resized_width,
@@ -35,11 +37,21 @@ impl Geometry {
         })
     }
 
+    #[cfg(any(test, feature = "osor"))]
+    pub fn osor(width: u32, height: u32) -> Result<Self> {
+        let mut geometry = Self::new(width, height, 512)?;
+        geometry.side = geometry.resized_width.div_ceil(8).saturating_mul(8).max(32);
+        geometry.rows = geometry.resized_height.div_ceil(8).saturating_mul(8).max(32);
+        geometry.pad_x = (geometry.side - geometry.resized_width) / 2;
+        geometry.pad_y = (geometry.rows - geometry.resized_height) / 2;
+        Ok(geometry)
+    }
+
     pub fn prepare(&self, input: &RemovalInput) -> Result<(Vec<f32>, Vec<f32>)> {
-        let pixels = self.side.checked_mul(self.side).ok_or_else(|| Error::InvalidInput("model crop is too large".into()))?;
+        let pixels = self.side.checked_mul(self.rows).ok_or_else(|| Error::InvalidInput("model crop is too large".into()))?;
         let mut rgb = vec![0.; pixels * 3];
         let mut mask = vec![0.; pixels];
-        for y in 0..self.side {
+        for y in 0..self.rows {
             let ry = reflect(y as isize - self.pad_y as isize, self.resized_height);
             for x in 0..self.side {
                 let rx = reflect(x as isize - self.pad_x as isize, self.resized_width);
@@ -85,22 +97,31 @@ impl Geometry {
         Ok((rgb, mask))
     }
 
+    #[cfg(any(test, feature = "osor"))]
+    pub fn restore_alpha(&self, planar: &[f32]) -> Result<Vec<f32>> {
+        self.restore_channels(planar, 1)
+    }
+
     pub fn restore(&self, planar: &[f32]) -> Result<Vec<f32>> {
-        let pixels = self.side * self.side;
-        if planar.len() != pixels * 3 {
+        self.restore_channels(planar, 3)
+    }
+
+    fn restore_channels(&self, planar: &[f32], channels: usize) -> Result<Vec<f32>> {
+        let pixels = self.side * self.rows;
+        if planar.len() != pixels * channels {
             return Err(Error::Inference("unexpected generated image dimensions".into()));
         }
         let count =
-            self.width.checked_mul(self.height).and_then(|v| v.checked_mul(3)).ok_or_else(|| Error::InvalidInput("output image is too large".into()))?;
+            self.width.checked_mul(self.height).and_then(|v| v.checked_mul(channels)).ok_or_else(|| Error::InvalidInput("output image is too large".into()))?;
         let mut out = vec![0.; count];
         for y in 0..self.height {
             for x in 0..self.width {
                 let gx = (x as f64 + 0.5) * self.resized_width as f64 / self.width as f64 - 0.5 + self.pad_x as f64;
                 let gy = (y as f64 + 0.5) * self.resized_height as f64 / self.height as f64 - 0.5 + self.pad_y as f64;
-                for c in 0..3 {
+                for c in 0..channels {
                     let channel = planar.get(c * pixels..(c + 1) * pixels).ok_or_else(|| Error::Inference("invalid generated image channels".into()))?;
-                    let value = sample_planar(channel, self.side, self.side, gx, gy)?;
-                    let dst = out.get_mut((y * self.width + x) * 3 + c).ok_or_else(|| Error::Inference("invalid restored image bounds".into()))?;
+                    let value = sample_planar(channel, self.side, self.rows, gx, gy)?;
+                    let dst = out.get_mut((y * self.width + x) * channels + c).ok_or_else(|| Error::Inference("invalid restored image bounds".into()))?;
                     *dst = value.clamp(0., 1.);
                 }
             }
@@ -143,6 +164,23 @@ fn bilinear(w: usize, h: usize, x: f64, y: f64, at: impl Fn(usize, usize) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn osor_crop_pads_axes_to_eight_without_upscaling_small_inputs() {
+        let geometry = Geometry::osor(101, 47).unwrap();
+        assert_eq!((geometry.side, geometry.rows), (104, 48));
+        assert_eq!((geometry.resized_width, geometry.resized_height), (101, 47));
+        let thin = Geometry::osor(2000, 1).unwrap();
+        assert_eq!((thin.side, thin.rows), (512, 32));
+        assert_eq!((thin.resized_width, thin.resized_height), (512, 1));
+        let input = RemovalInput { width: 3, height: 2, rgb: (0..18).map(|i| i as f32 / 18.).collect(), mask: vec![0., 0.25, 1., 0., 0., 0.] };
+        let small = Geometry::osor(3, 2).unwrap();
+        let (rgb, _) = small.prepare(&input).unwrap();
+        assert_eq!(small.restore(&rgb).unwrap(), input.rgb);
+        let alpha = vec![0.25; small.side * small.rows];
+        assert_eq!(small.restore_alpha(&alpha).unwrap(), vec![0.25; 6]);
+        assert!(small.restore_alpha(&alpha[..alpha.len() - 1]).is_err());
+    }
+
     #[test]
     fn rectangular_native_crop_preserves_pixels_and_aspect_ratio() {
         let input = RemovalInput { width: 3, height: 2, rgb: (0..18).map(|i| i as f32 / 18.).collect(), mask: vec![0., 1., 0., 0., 0., 0.] };
