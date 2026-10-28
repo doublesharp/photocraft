@@ -107,6 +107,7 @@ fn quick_selection(s: &mut Session, p: &Value) -> Result<Value> {
     let size = f(p, "size", 30.0).clamp(1.0, 5000.0);
     let m = match p.get("mode").and_then(Value::as_str).unwrap_or("add") {
         "subtract" => SelectionMode::Subtract,
+        "intersect" => SelectionMode::Intersect,
         "replace" | "new" => SelectionMode::Replace,
         _ => SelectionMode::Add,
     };
@@ -527,7 +528,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "select.quick",
             "Quick Selection",
             [],
-            r##"{"points":[[x,y],…],"size":px=30,"mode":"add|subtract|replace"="add","sampleAllLayers":bool=false,"enhanceEdge":bool=false}"##,
+            r##"{"points":[[x,y],…],"size":px=30,"mode":"add|subtract|replace|intersect"="add","sampleAllLayers":bool=false,"enhanceEdge":bool=false}"##,
             has_doc,
             quick_selection
         ),

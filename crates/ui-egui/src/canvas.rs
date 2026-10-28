@@ -819,8 +819,7 @@ fn handle_primary_canvas_input(app: &mut PhotocraftApp, ui: &mut egui::Ui, view:
     }
     // Capture intent at the press, before egui's drag threshold or click replay on release:
     // Type transforms keep Command; selections keep Add/Subtract if Shift/Alt is released.
-    let capture_press =
-        tool.is_type() || matches!(tool, Tool::RectMarquee | Tool::EllipseMarquee | Tool::SingleRowMarquee | Tool::SingleColumnMarquee | Tool::ObjectSelection);
+    let capture_press = tool.is_type() || crate::tool_feedback::is_selection_tool(tool);
     let tool_press = egui::Id::unique(("tool-pointer-press-modifiers", idx));
     if capture_press
         && let Some((p, press_mods)) = ui.input(|i| {
@@ -1149,7 +1148,7 @@ fn handle_canvas_tool_clicks(
     {
         let click_button = if app.secondary_erase { PointerButton::Secondary } else { PointerButton::Primary };
         let click_mods = ui.input(|i| pointer_button_modifiers(&i.events, click_button)).unwrap_or(mods);
-        let click_mods = if tool == Tool::ObjectSelection && click_button == PointerButton::Primary {
+        let click_mods = if crate::tool_feedback::is_selection_tool(tool) && click_button == PointerButton::Primary {
             ctx.data(|d| d.get_temp(tool_press)).unwrap_or(click_mods)
         } else {
             click_mods

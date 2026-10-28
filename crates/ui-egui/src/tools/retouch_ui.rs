@@ -192,7 +192,7 @@ pub(crate) fn finish_stroke_with_brush(
         },
         Tool::QuickSelection => {
             let size = app.session.tools.brush.size;
-            let mode = if mods.alt { "subtract" } else { "add" };
+            let mode = crate::tool_feedback::selection_mode(Tool::QuickSelection, app.ui.selection_mode, mods);
             let xy: Vec<[f64; 2]> = points.iter().map(|q| [q[0], q[1]]).collect();
             let (sample_all, enhance) = (o.sample_all.quick_selection, o.enhance_edge);
             let r = app.run("select.quick", json!({"points": xy, "size": size, "mode": mode, "enhanceEdge": enhance, "sampleAllLayers": sample_all}));
@@ -554,20 +554,15 @@ pub fn content_aware_move_params(app: &PhotocraftApp, offset: [i64; 2]) -> Value
 /// rectangle: with Object Finder on it selects the object under the pointer, the one hovering
 /// highlighted (#4087; ⇧ adds, ⌥ subtracts, ⇧⌥ intersects, otherwise replaces). With it off it
 /// falls back to a Quick Selection dab at
-/// the brush size instead of looking dead (⌥ subtracts, otherwise it adds). Larger drags
-/// run the rectangle GrabCut (⌥ subtracts, ⇧ adds, otherwise replaces).
+/// the brush size instead of looking dead (⌥ subtracts, ⇧⌥ intersects, otherwise it adds).
+/// Larger drags run the rectangle GrabCut with the same modifier overrides.
 pub fn finish_object_selection(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) {
     let (x, y) = (start[0].min(end[0]), start[1].min(end[1]));
     let (w, h) = ((end[0] - start[0]).abs(), (end[1] - start[1]).abs());
     let sample_all = app.ui.tool_options.sample_all.object_selection;
     if (w < 2.0 || h < 2.0) && app.ui.tool_options.object_finder {
         // Object Finder (#4087): the object under the click, as hovering highlighted it.
-        let mode = match (mods.shift, mods.alt) {
-            (true, true) => "intersect",
-            (true, false) => "add",
-            (false, true) => "subtract",
-            (false, false) => "replace",
-        };
+        let mode = crate::tool_feedback::selection_mode(Tool::ObjectSelection, app.ui.selection_mode, mods);
         let r = app.run("select.object", json!({"point": [end[0], end[1]], "mode": mode, "sampleAllLayers": sample_all}));
         crate::object_finder::clear(app);
         report_smart_result(app, r, tl!("No object found there — drag a rectangle around it"));
@@ -575,18 +570,12 @@ pub fn finish_object_selection(app: &mut PhotocraftApp, start: [f64; 2], end: [f
     }
     if w < 2.0 || h < 2.0 {
         let size = app.session.tools.brush.size;
-        let mode = if mods.alt { "subtract" } else { "add" };
+        let mode = crate::tool_feedback::selection_mode(Tool::QuickSelection, app.ui.selection_mode, mods);
         let r = app.run("select.quick", json!({"points": [[end[0], end[1]]], "size": size, "mode": mode, "sampleAllLayers": sample_all}));
         report_smart_result(app, r, tl!("Quick Selection found nothing there"));
         return;
     }
-    let mode = if mods.alt {
-        "subtract"
-    } else if mods.shift {
-        "add"
-    } else {
-        "replace"
-    };
+    let mode = crate::tool_feedback::selection_mode(Tool::ObjectSelection, app.ui.selection_mode, mods);
     let r = app.run("select.object", json!({"rect": [x.round(), y.round(), w.round(), h.round()], "mode": mode, "sampleAllLayers": sample_all}));
     report_smart_result(app, r, tl!("Object Selection found nothing there — try a tighter rectangle"));
 }

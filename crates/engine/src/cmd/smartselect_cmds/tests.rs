@@ -675,3 +675,17 @@ fn refine_edge_rejects_bad_edits_and_keeps_the_selection() {
         assert_eq!(sel_bytes(&s, 80, 40), before, "{bad}");
     }
 }
+
+#[test]
+fn selection_modifiers_quick_intersection_preserves_only_the_shared_region() {
+    for depth in [8, 16] {
+        let mut s = two_regions(depth);
+        s.execute("select.rect", json!({"x":0,"y":0,"width":140,"height":50})).unwrap();
+        s.execute("select.quick", json!({"points":[[20,25]],"size":8,"mode":"intersect"})).unwrap();
+        assert!(cov(&s, 10, 10) > 0.5);
+        assert!(cov(&s, 100, 10) < 0.01, "intersection must remove old pixels outside the detected region");
+        assert!(cov(&s, 10, 80) < 0.01, "intersection must not add newly detected pixels outside the old selection");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(cov(&s, 100, 10) > 0.5 && cov(&s, 10, 80) < 0.01);
+    }
+}

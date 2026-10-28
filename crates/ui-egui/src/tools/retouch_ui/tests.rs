@@ -1454,3 +1454,25 @@ fn removal_preview_survives_tool_persistence_and_leaves_full_screen() {
     assert_eq!(h.state().session.journal.len(), journal + 1, "only changing the brush was journalled");
     assert!(!h.state().ui.status_error, "{}", h.state().ui.status);
 }
+
+#[test]
+fn selection_modifiers_quick_and_object_gestures_intersect_on_shift_option() {
+    let both = egui::Modifiers::SHIFT | egui::Modifiers::ALT;
+    for (tool, finder, rect) in [(Tool::QuickSelection, false, false), (Tool::ObjectSelection, false, false), (Tool::ObjectSelection, false, true)] {
+        let mut app = app();
+        app.run("paint.pencil", json!({"points":[[30,30]],"size":24,"color":"#ff0000"})).unwrap();
+        app.run("select.rect", json!({"x":0,"y":0,"width":50,"height":60})).unwrap();
+        app.ui.tool = tool;
+        app.ui.tool_options.object_finder = finder;
+        let (start, end) = if rect { ([10.0, 10.0], [60.0, 50.0]) } else { ([30.0, 30.0], [30.0, 30.0]) };
+        tool_event(&mut app, ToolEvent::Down { x: start[0], y: start[1], pressure: 1.0 }, both);
+        tool_event(&mut app, ToolEvent::Move { x: end[0], y: end[1], pressure: 1.0 }, egui::Modifiers::NONE);
+        tool_event(&mut app, ToolEvent::Up { x: end[0], y: end[1] }, egui::Modifiers::NONE);
+        assert!(!app.ui.status_error, "{tool:?}: {}", app.ui.status);
+        let (_, params) = app.session.journal.last().unwrap();
+        assert_eq!(params["mode"], "intersect", "{tool:?}, rectangle={rect}");
+        let selection = app.session.active().unwrap().doc.selection.as_ref().unwrap();
+        assert!(selection.sample_channel(30, 30, 0) > 0.5);
+        assert!(selection.sample_channel(2, 2, 0) < 0.01, "old selection outside the object must be removed");
+    }
+}

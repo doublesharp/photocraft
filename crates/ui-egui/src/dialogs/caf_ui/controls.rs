@@ -75,7 +75,16 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
         let op = match l.get("op").and_then(Value::as_str) {
             Some(o) if LASSO_OPS.contains(&o) => o.to_string(),
             Some(o) => return Err(format!("bad lasso op `{o}`")),
-            None => LASSO_OPS[app.distort.caf.as_ref().map_or(0, |w| w.lasso_op)].to_string(),
+            None => {
+                let modifiers = egui::Modifiers {
+                    shift: l.get("shift").and_then(Value::as_bool).unwrap_or(false),
+                    alt: l.get("alt").and_then(Value::as_bool).unwrap_or(false),
+                    ..Default::default()
+                };
+                let modifiers = crate::workspace_ui::sticky_mods(app, modifiers);
+                let operation = app.distort.caf.as_ref().map_or(0, |w| lasso_operation(w, modifiers));
+                LASSO_OPS.get(operation).copied().unwrap_or("new").to_string()
+            }
         };
         fill_edit(app, json!({"op": op, "points": pts}));
     }
@@ -116,8 +125,20 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
     Ok(app.distort.caf.as_ref().map(CafWorkspace::describe).unwrap_or(Value::Null))
 }
 
+/// The toolbar's lasso mode overridden by the same keys as the canvas selection tools.
+/// Capturing it at pointer-down lets the keys be released before the outline closes.
+fn lasso_operation(w: &CafWorkspace, mods: egui::Modifiers) -> usize {
+    match crate::tool_feedback::selection_mode(crate::state::Tool::Lasso, w.lasso_op.min(3) as u8, mods) {
+        "add" => 1,
+        "subtract" => 2,
+        "intersect" => 3,
+        _ => 0,
+    }
+}
+
 /// Pointer in document coordinates (from the view or the control channel).
 pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
+    let mods = crate::workspace_ui::sticky_mods(app, mods);
     let Some(w) = app.distort.caf.as_mut() else { return };
     match (w.tool, ev) {
         (CafTool::Brush, ToolEvent::Down { x, y, .. }) => w.begin_stroke([x, y], mods.alt),
@@ -131,12 +152,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
         }
         (CafTool::Lasso, ToolEvent::Down { x, y, .. }) => {
             // Shift adds, Alt subtracts, both intersect (as Photoshop's selection tools).
-            let op = match (mods.shift, mods.alt) {
-                (true, true) => 3,
-                (true, false) => 1,
-                (false, true) => 2,
-                _ => w.lasso_op,
-            };
+            let op = lasso_operation(w, mods);
             w.lasso = Some((op, vec![[x, y]]));
         }
         (CafTool::Lasso, ToolEvent::Move { x, y, .. }) => {
@@ -206,5 +222,43 @@ pub(super) fn tool_tip(t: CafTool) -> String {
         CafTool::Lasso => format!("{} (L)", tl!("Lasso Tool")),
         CafTool::Hand => format!("{} (H)", tl!("Hand Tool")),
         CafTool::Zoom => format!("{} (Z)", tl!("Zoom Tool")),
+    }
+}
+
+#[cfg(test)]
+mod selection_modifier_tests {
+    use super::*;
+
+    fn app() -> PhotocraftApp {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"width":48,"height":48})).unwrap();
+        app.run("select.rect", json!({"x":12,"y":12,"width":16,"height":16})).unwrap();
+        super::super::open(&mut app).unwrap();
+        app.distort.caf.as_mut().unwrap().tool = CafTool::Lasso;
+        app
+    }
+
+    #[test]
+    fn selection_modifiers_caf_lasso_uses_sticky_intent_and_latches_it_at_press() {
+        for (shift, alt, expected) in [(true, false, "add"), (false, true, "subtract"), (true, true, "intersect")] {
+            let mut app = app();
+            app.ui.shell.sticky_shift = shift;
+            app.ui.shell.sticky_alt = alt;
+            pointer(&mut app, ToolEvent::Down { x: 8.0, y: 8.0, pressure: 1.0 }, egui::Modifiers::NONE);
+            app.ui.shell.sticky_shift = false;
+            app.ui.shell.sticky_alt = false;
+            for (x, y) in [(30.0, 8.0), (30.0, 30.0), (8.0, 30.0)] {
+                pointer(&mut app, ToolEvent::Move { x, y, pressure: 1.0 }, egui::Modifiers::NONE);
+            }
+            pointer(&mut app, ToolEvent::Up { x: 8.0, y: 8.0 }, egui::Modifiers::NONE);
+            assert_eq!(app.distort.caf.as_ref().unwrap().fill_edits.last().unwrap()["op"], expected);
+        }
+    }
+
+    #[test]
+    fn selection_modifiers_caf_control_lasso_accepts_the_same_modifier_overrides() {
+        let mut app = app();
+        control(&mut app, &json!({"lasso":{"points":[[8,8],[30,8],[30,30],[8,30]],"shift":true,"alt":true}})).unwrap();
+        assert_eq!(app.distort.caf.as_ref().unwrap().fill_edits.last().unwrap()["op"], "intersect");
     }
 }

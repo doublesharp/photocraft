@@ -1071,3 +1071,49 @@ fn size_readout_follows_the_ruler_unit() {
     ur.rulers = Unit::Millimeters;
     assert_eq!(crate::canvas::readout_in(&ur, 150.0, [1644.0, 2659.0], [0.0, 0.0, 3425.0, 100.0])[0], "579.97 mm");
 }
+
+#[test]
+fn selection_modifiers_wand_click_keeps_the_press_intent_after_key_release() {
+    for intent in [Modifiers::SHIFT, Modifiers::ALT, Modifiers::SHIFT | Modifiers::ALT] {
+        let mut h = harness(Tool::MagicWand);
+        h.state_mut().run("paint.pencil", json!({"points":[[220,150]],"size":60,"color":"#ff0000"})).unwrap();
+        h.state_mut().run("select.rect", json!({"x":10,"y":10,"width":20,"height":20})).unwrap();
+        mods(&mut h, intent);
+        move_to(&mut h, 220.0, 150.0);
+        let p = screen(&h, 220.0, 150.0);
+        button(&mut h, p, true, intent);
+        mods(&mut h, Modifiers::NONE);
+        button(&mut h, p, false, Modifiers::NONE);
+        h.run_steps(2);
+        let app = h.state();
+        assert!(!app.ui.status_error, "{}", app.ui.status);
+        let (command, params) = app.session.journal.last().unwrap();
+        assert_eq!(command, "select.magicWand");
+        let expected = if intent.shift && intent.alt {
+            "intersect"
+        } else if intent.alt {
+            "subtract"
+        } else {
+            "add"
+        };
+        assert_eq!(params["mode"], expected, "a click must use modifiers from pointer-down");
+    }
+}
+
+#[test]
+fn selection_modifiers_polygon_and_magnetic_clicks_keep_press_intent() {
+    for tool in [Tool::PolygonLasso, Tool::MagneticLasso] {
+        let mut h = harness(tool);
+        h.state_mut().run("select.rect", json!({"x":10,"y":10,"width":20,"height":20})).unwrap();
+        mods(&mut h, Modifiers::SHIFT);
+        move_to(&mut h, 220.0, 150.0);
+        let p = screen(&h, 220.0, 150.0);
+        button(&mut h, p, true, Modifiers::SHIFT);
+        mods(&mut h, Modifiers::NONE);
+        button(&mut h, p, false, Modifiers::NONE);
+        h.run_steps(2);
+        let app = h.state();
+        let mode = if tool == Tool::PolygonLasso { &app.ui.polygon_mode } else { &app.ui.magnetic.mode };
+        assert_eq!(mode, "add", "{tool:?}: first click must capture its press-time intent");
+    }
+}

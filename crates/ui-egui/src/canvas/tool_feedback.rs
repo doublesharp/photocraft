@@ -53,36 +53,16 @@ pub fn is_selection_tool(tool: Tool) -> bool {
 /// The effective selection mode of `tool` for the options-bar mode `bar` (0 New, 1 Add,
 /// 2 Subtract, 3 Intersect) and the held modifiers: exactly what the tool's gesture will use.
 pub fn selection_mode(tool: Tool, bar: u8, m: egui::Modifiers) -> &'static str {
-    match tool {
-        // Quick Selection always adds (⌥ subtracts), like Photoshop's after the first stroke.
-        Tool::QuickSelection => {
-            if m.alt {
-                "subtract"
-            } else {
-                "add"
-            }
-        }
-        // Object Selection: ⌥ subtracts, ⇧ adds (see `retouch_ui::finish_object_selection`).
-        Tool::ObjectSelection => {
-            if m.alt {
-                "subtract"
-            } else if m.shift {
-                "add"
-            } else {
-                "replace"
-            }
-        }
-        _ => {
-            if m.shift && m.alt {
-                "intersect"
-            } else if m.shift {
-                "add"
-            } else if m.alt {
-                "subtract"
-            } else {
-                ["replace", "add", "subtract", "intersect"][bar.min(3) as usize]
-            }
-        }
+    match (m.shift, m.alt) {
+        (true, true) => "intersect",
+        (true, false) => "add",
+        (false, true) => "subtract",
+        (false, false) => match tool {
+            // Quick Selection keeps growing the selection between unmodified strokes.
+            Tool::QuickSelection => "add",
+            Tool::ObjectSelection => "replace",
+            _ => ["replace", "add", "subtract", "intersect"][bar.min(3) as usize],
+        },
     }
 }
 
@@ -124,7 +104,13 @@ pub fn badge(app: &PhotocraftApp, tool: Tool, m: egui::Modifiers) -> Option<Badg
     if m.command && app.drag.is_none() {
         return None;
     }
-    let mut m = app.drag.as_ref().filter(|d| d.tool == Tool::Lasso && tool == Tool::Lasso).map_or(m, |d| d.modifiers);
+    if tool == Tool::PolygonLasso && !app.ui.polygon.is_empty() {
+        return Badge::from_mode(&app.ui.polygon_mode);
+    }
+    if tool == Tool::MagneticLasso && app.ui.magnetic.active() {
+        return Badge::from_mode(&app.ui.magnetic.mode);
+    }
+    let mut m = app.drag.as_ref().filter(|d| d.tool == tool).map_or(m, |d| d.modifiers);
     // The Lasso's Alt with nothing selected draws straight segments; it subtracts nothing.
     if matches!(tool, Tool::Lasso | Tool::PolygonLasso) && app.drag.is_none() && app.session.active().is_none_or(|st| st.doc.selection.is_none()) {
         m.alt = false;
@@ -263,6 +249,41 @@ mod tests {
         assert_eq!(badge_glyph(Badge::Add, c, 3.0).len(), 2);
         assert_eq!(badge_glyph(Badge::Subtract, c, 3.0).len(), 1);
         assert!(badge_glyph(Badge::Intersect, c, 3.0).iter().all(|[a, b]| a.x != b.x && a.y != b.y));
+    }
+
+    #[test]
+    fn selection_modifiers_badges_keep_the_active_gesture_mode() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", serde_json::json!({"width":40,"height":30})).unwrap();
+        app.run("select.rect", serde_json::json!({"x":5,"y":5,"width":10,"height":10})).unwrap();
+        for tool in [
+            Tool::RectMarquee,
+            Tool::EllipseMarquee,
+            Tool::SingleRowMarquee,
+            Tool::SingleColumnMarquee,
+            Tool::Lasso,
+            Tool::QuickSelection,
+            Tool::ObjectSelection,
+        ] {
+            app.drag = Some(crate::canvas::drag::Drag::new(tool, [2.0, 2.0], vec![[2.0, 2.0, 1.0]], egui::Modifiers::ALT, false));
+            assert_eq!(badge(&app, tool, egui::Modifiers::NONE), Some(Badge::Subtract), "{tool:?}: badge must show the press-time intent");
+        }
+        app.drag = None;
+        app.ui.polygon = vec![[2.0, 2.0]];
+        app.ui.polygon_mode = "intersect".into();
+        assert_eq!(badge(&app, Tool::PolygonLasso, egui::Modifiers::NONE), Some(Badge::Intersect));
+        app.ui.polygon.clear();
+        app.ui.magnetic.path = vec![[2.0, 2.0]];
+        app.ui.magnetic.mode = "subtract".into();
+        assert_eq!(badge(&app, Tool::MagneticLasso, egui::Modifiers::NONE), Some(Badge::Subtract));
+    }
+
+    #[test]
+    fn selection_modifiers_smart_tool_badges_announce_intersection() {
+        let both = egui::Modifiers::SHIFT | egui::Modifiers::ALT;
+        for tool in [Tool::QuickSelection, Tool::ObjectSelection] {
+            assert_eq!(selection_mode(tool, 0, both), "intersect", "{tool:?}");
+        }
     }
 
     /// #7495: an outline still being drawn is one unbroken line (no dashes, nothing marching),
