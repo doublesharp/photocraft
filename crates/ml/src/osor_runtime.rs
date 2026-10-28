@@ -1,5 +1,4 @@
 //! Synchronous bounded OSOR bridge. The caller's process-wide lease drains every forward.
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -9,15 +8,14 @@ use crate::resample::Geometry;
 use crate::store::osor_reference::{MAX_DECODED_WEIGHTS, Reference};
 use crate::{Error, OsorBackend, RemovalControl, RemovalInput, RemovalOutput, Result, check};
 
-struct Cached {
+pub(crate) struct Cached {
     identity: Vec<u8>,
     backend: String,
     model: Osor,
 }
-static CACHED: Mutex<Option<Cached>> = Mutex::new(None);
 
 pub(crate) fn clear_cache() {
-    *CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    crate::cache::clear_model("osor-sdxl");
 }
 
 fn error(error: osor_rs::Error) -> Error {
@@ -31,7 +29,7 @@ fn error(error: osor_rs::Error) -> Error {
 fn load(reference: &Reference, backend: OsorBackend) -> Result<(Cached, f64)> {
     let identity = serde_json::to_vec(&reference.manifest).map_err(|e| Error::Integrity(e.to_string()))?;
     let backend_key = format!("{backend:?}");
-    let old = CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    let old = crate::cache::take_osor();
     if let Some(old) = old {
         if old.identity == identity && old.backend == backend_key {
             return Ok((old, 0.));
@@ -68,7 +66,7 @@ pub(crate) fn infer(reference: &Reference, backend: OsorBackend, input: &Removal
     // Metal may enqueue device work. Drain it even if a stage observer cancels or fails;
     // admission and the model remain owned until synchronization completes.
     let drained = cached.model.device().synchronize().map_err(|e| Error::Inference(e.to_string()));
-    *CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cached);
+    crate::cache::put_osor(cached);
     drained?;
     let mut output = result?;
     output.load_ms = load_ms;

@@ -8,6 +8,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod cache;
 mod catalog;
 #[cfg(all(not(target_arch = "wasm32"), feature = "osor"))]
 mod osor_runtime;
@@ -122,6 +124,7 @@ pub struct RemovalPermit<'a> {
     service: &'a RemovalService,
     model: &'static ModelSpec,
     transient_bytes: u64,
+    available_bytes: u64,
     used: bool,
     #[cfg(not(target_arch = "wasm32"))]
     _lease: store::Lease,
@@ -133,6 +136,7 @@ pub struct RemovalBatchPermit<'a> {
     service: &'a RemovalService,
     models: Vec<&'static ModelSpec>,
     transient_bytes: u64,
+    available_bytes: u64,
     calls: u32,
     failed: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -171,7 +175,7 @@ impl RemovalBatchPermit<'_> {
         }
         check(ctl)?;
         self.calls += 1;
-        let result = self.service.infer_admitted(model, input, ctl);
+        let result = self.service.infer_admitted(model, input, ctl, self.available_bytes);
         self.failed = result.is_err();
         result
     }
@@ -205,14 +209,14 @@ impl RemovalPermit<'_> {
             return Err(Error::InvalidInput("a removal permit can run only one inference".into()));
         }
         self.used = true;
-        self.service.infer_admitted(self.model, input, ctl)
+        self.service.infer_admitted(self.model, input, ctl, self.available_bytes)
     }
 }
 
 impl RemovalService {
-    fn infer_admitted(&self, model: &'static ModelSpec, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
+    fn infer_admitted(&self, model: &'static ModelSpec, input: &RemovalInput, ctl: &dyn RemovalControl, available_bytes: u64) -> Result<RemovalOutput> {
         #[cfg(not(target_arch = "wasm32"))]
-        self.native.prepare_model(model.id, self.backend.is_some());
+        self.native.prepare_model(model.id, self.backend.is_some(), available_bytes);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(backend) = &self.backend {
             return self.native.infer_backend(backend.as_ref(), model.id, input, ctl);
@@ -227,7 +231,7 @@ impl RemovalService {
         }
         #[cfg(not(all(not(target_arch = "wasm32"), feature = "native-inference")))]
         {
-            let _ = (model, input, ctl);
+            let _ = (model, input, ctl, available_bytes);
             Err(Error::Unavailable)
         }
     }
@@ -263,10 +267,9 @@ impl RemovalService {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let lease = self.native.begin()?;
-            if let Some(model) = models.first() {
-                self.native.prepare_model(model.id, self.backend.is_some());
-            }
-            Ok(RemovalBatchPermit { service: self, models, transient_bytes, calls: 0, failed: false, _lease: lease })
+            let available_bytes = budget_bytes.saturating_sub(transient_bytes);
+            crate::cache::admit(self.backend.is_some(), available_bytes);
+            Ok(RemovalBatchPermit { service: self, models, transient_bytes, available_bytes, calls: 0, failed: false, _lease: lease })
         }
         #[cfg(target_arch = "wasm32")]
         Err(Error::Unavailable)
@@ -295,8 +298,9 @@ impl RemovalService {
                 return Err(Error::Unavailable);
             }
             let lease = self.native.begin()?;
-            self.native.prepare_model(model.id, self.backend.is_some());
-            Ok(RemovalPermit { service: self, model, transient_bytes, used: false, _lease: lease })
+            let available_bytes = budget_bytes.saturating_sub(transient_bytes);
+            self.native.prepare_model(model.id, self.backend.is_some(), available_bytes);
+            Ok(RemovalPermit { service: self, model, transient_bytes, available_bytes, used: false, _lease: lease })
         }
     }
 

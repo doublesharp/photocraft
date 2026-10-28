@@ -1075,8 +1075,11 @@ fn real_osor_service_smoke_restores_rgb_alpha_and_reuses_warm_family() {
     let reference_alpha = cold.edit_alpha.clone().unwrap();
     drop(cold);
     drop(reservation);
-    let mut warm_permit = service.admit("osor-sdxl", transient, budget).unwrap();
-    let warm = warm_permit.infer(&input, &NoopControl).unwrap();
+    // Recommended lists LaMa first even when this region only needs OSOR.
+    // OSOR-only builds exercise the same batch reuse without an unavailable adapter.
+    let models: &[&str] = if cfg!(feature = "native-inference") { &["lama", "osor-sdxl"] } else { &["osor-sdxl"] };
+    let mut warm_permit = service.admit_models(models, transient, budget).unwrap();
+    let warm = warm_permit.infer("osor-sdxl", &input, &NoopControl).unwrap();
     let reservation = warm_permit.into_reservation();
     validate_output(&input, &warm).unwrap();
     assert_eq!(warm.load_ms, 0.);
@@ -1098,6 +1101,50 @@ fn real_osor_service_smoke_restores_rgb_alpha_and_reuses_warm_family() {
     drop(reservation);
     service.remove("osor-sdxl").unwrap();
     assert!(source.join("unet.safetensors").is_file(), "reference removal must preserve source weights");
+}
+
+#[cfg(all(feature = "native-inference", feature = "osor-metal", target_os = "macos"))]
+#[test]
+#[ignore = "requires explicitly supplied local LaMa and OSOR weights and a real-model memory window"]
+fn real_recommended_batches_reuse_both_models_within_budget() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let source = PathBuf::from(std::env::var_os("PHOTOCRAFT_ML_OSOR_BUNDLE").expect("supply the local converted bundle explicitly"));
+    let lama = PathBuf::from(std::env::var_os("PHOTOCRAFT_ML_LAMA").expect("supply the pinned LaMa weights explicitly"));
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("models");
+    let service = RemovalService::new(Some(root.clone())).with_osor_backend(crate::OsorBackend::Metal { ordinal: 0 });
+    service.import("lama", &lama, &NoopControl).unwrap();
+    service.import("osor-sdxl", &source, &NoopControl).unwrap();
+    let mut input = RemovalInput { width: 33, height: 33, rgb: vec![0.5; 33 * 33 * 3], mask: vec![0.; 33 * 33] };
+    for y in 12..21 {
+        for x in 12..21 {
+            input.mask[y * 33 + x] = 1.;
+        }
+    }
+    let transient = input.minimum_buffer_bytes_for("osor-sdxl").unwrap();
+    let mut diagnostics = Vec::new();
+    for run in 0..2 {
+        // Separate service instances must share the same bounded, process-wide cache.
+        let next = RemovalService::new(Some(root.clone())).with_osor_backend(crate::OsorBackend::Metal { ordinal: 0 });
+        let mut permit = next.admit_models(&["lama", "osor-sdxl"], transient, 48 * 1024 * 1024 * 1024).unwrap();
+        for id in ["lama", "osor-sdxl"] {
+            let output = permit.infer(id, &input, &NoopControl).unwrap();
+            validate_output(&input, &output).unwrap();
+            if run == 0 {
+                assert!(output.load_ms > 0., "the first {id} forward must load its model");
+            } else {
+                assert_eq!(output.load_ms, 0., "the next Recommended batch must reuse {id}");
+            }
+            diagnostics.push(serde_json::json!({"run":run,"modelId":id,"loadMs":output.load_ms}));
+        }
+        let reservation = permit.into_reservation();
+        assert!(matches!(service.remove("lama"), Err(Error::Busy)));
+        drop(reservation);
+    }
+    println!("{}", serde_json::json!({"kind":"Recommended dual-model cache smoke","runs":diagnostics}));
+    service.remove("lama").unwrap();
+    service.remove("osor-sdxl").unwrap();
+    assert!(source.join("unet.safetensors").is_file());
 }
 
 #[test]

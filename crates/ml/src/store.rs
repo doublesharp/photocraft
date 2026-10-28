@@ -63,15 +63,13 @@ pub(crate) struct NativeService {
 
 // Services can be constructed for separate sessions. They must not each admit a separate
 // model working set or keep their own warm family in the same process.
-static BUSY: AtomicBool = AtomicBool::new(false);
-#[cfg(feature = "native-inference")]
-static CACHED: Mutex<Option<crate::runtime::Cached>> = Mutex::new(None);
+pub(crate) static BUSY: AtomicBool = AtomicBool::new(false);
 
 /// Process-wide ownership that can travel with an unconsumed worker result.
-pub(crate) struct Lease(&'static AtomicBool);
+pub(crate) struct Lease;
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        crate::cache::idle();
     }
 }
 
@@ -95,23 +93,11 @@ impl NativeService {
     }
 
     pub(crate) fn begin(&self) -> Result<Lease> {
-        BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).map(|_| Lease(&BUSY)).map_err(|_| Error::Busy)
+        BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).map(|_| Lease).map_err(|_| Error::Busy)
     }
 
-    pub(crate) fn prepare_model(&self, id: &str, injected: bool) {
-        #[cfg(feature = "osor")]
-        if injected || id != "osor-sdxl" {
-            crate::osor_runtime::clear_cache();
-        }
-        #[cfg(feature = "native-inference")]
-        {
-            let mut cached = CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if injected || cached.as_ref().is_some_and(|cached| cached.model_id != id) {
-                *cached = None;
-            }
-        }
-        #[cfg(not(feature = "native-inference"))]
-        let _ = (id, injected);
+    pub(crate) fn prepare_model(&self, id: &str, injected: bool, available_bytes: u64) {
+        crate::cache::prepare(id, injected, available_bytes);
     }
 
     #[cfg(feature = "osor")]
@@ -289,7 +275,7 @@ impl NativeService {
         if model.id == "osor-sdxl" {
             #[cfg(feature = "osor")]
             {
-                self.prepare_model("", true);
+                self.prepare_model("", true, 0);
                 return osor_install::install(self, ctl);
             }
             #[cfg(not(feature = "osor"))]
@@ -386,6 +372,7 @@ impl NativeService {
 
     pub fn remove(&self, model: &'static ModelSpec) -> Result<()> {
         let _lease = self.begin()?;
+        crate::cache::clear_model(model.id);
         #[cfg(feature = "osor")]
         if model.id == "osor-sdxl" {
             return osor_reference::remove(self);
@@ -431,13 +418,7 @@ impl NativeService {
             };
         }
         self.state().verified.remove(model.id);
-        #[cfg(feature = "native-inference")]
-        {
-            let mut cached = CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if cached.as_ref().is_some_and(|cached| cached.model_id == model.id) {
-                *cached = None;
-            }
-        }
+        crate::cache::clear_model(model.id);
         Ok(())
     }
 
@@ -456,12 +437,12 @@ impl NativeService {
     pub fn infer(&self, model: &'static ModelSpec, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
         check(ctl)?;
         let (file, fingerprint) = self.verify_open(model, ctl)?;
-        let cached = CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        // Only one compiled family remains resident. A different model drops the old plan before
-        // allocating the new one. The busy lease outlives every plan and the full forward.
+        let cached = crate::cache::take_onnx();
+        // Budgeted preparation evicts any incompatible plan before loading. The busy
+        // lease outlives the forward and keeps the idle reaper away from active resources.
         let (cached, load_ms) = crate::runtime::load(model, file, fingerprint, cached, ctl)?;
         let result = crate::runtime::infer(model, &cached, input, ctl);
-        *CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cached);
+        crate::cache::put_onnx(cached);
         let mut out = result?;
         out.load_ms = load_ms;
         check(ctl)?;

@@ -6,11 +6,11 @@ The model store opens each directory component without following links and retai
 
 A writable model directory is not a security boundary against an actively hostile process with the same filesystem authority. Portable capability-relative hard-link and unlink operations still select a leaf by name, not atomically by open-file identity; replacement between a check and a syscall, or while cleanup is running, can change the affected leaf. The bounded cleanup search also cannot find a partial moved outside the held directory or beyond 4,096 entries. Use a directory writable only by the trusted user, and do not claim race-free conditional publication or deletion against that user. Subsequent model loads always rehash the opened file.
 
-The process-wide permit and warm cache hold at most one active operation and one cached model family. Model bytes are rehashed before each inference, even when a compiled plan is warm, because file metadata can be restored after a rewrite. Cold loads parse the same bounded byte snapshot that was hashed, with a transient allocation up to the catalog artifact size. Cancellation cannot interrupt a tract forward; admission stays held until the worker returns. The engine also retains it while an output waits to be applied or discarded. Model installation calls `RemovalControl::begin_irreversible` immediately before no-clobber publication and ignores cancellation after that point. Hosts with asynchronous cancellation must override the default hook with an atomic gate that rejects new cancellation once commit begins; the engine `JobCtx` connects this hook to its commit gate. The crop has a 16,777,216-pixel input limit.
+The process-wide permit admits at most one active operation. The warm cache retains at most one ONNX plan and one OSOR model together when their catalog working-set estimates fit the captured memory budget after subtracting all admitted transient buffers. A single background worker releases both after five idle minutes. The idle interval starts again when the operation or retained-preview reservation releases admission; the worker cannot evict models while that ownership is held. Insufficient headroom evicts a companion before loading the requested model. A failed cleanup-thread start evicts idle models or retries after the active owner releases. Model bytes are rehashed before each inference, even when a compiled plan is warm, because file metadata can be restored after a rewrite. Cold loads parse the same bounded byte snapshot that was hashed, with a transient allocation up to the catalog artifact size. Cancellation cannot interrupt a tract forward; admission stays held until the worker returns. The engine also retains it while an output waits to be applied or discarded. Model installation calls `RemovalControl::begin_irreversible` immediately before no-clobber publication and ignores cancellation after that point. Hosts with asynchronous cancellation must override the default hook with an atomic gate that rejects new cancellation once commit begins; the engine `JobCtx` connects this hook to its commit gate. The crop has a 16,777,216-pixel input limit.
 
 ## Early resource admission API
 
-`RemovalService::admit(&self, model_id: &str, transient_bytes: u64, budget_bytes: u64) -> Result<RemovalPermit<'_>>` checks the catalog model's `memory_mib` working-set estimate (MiB × 1,048,576) plus the caller's conservative bound for all overlapping transient buffers with checked arithmetic against the frozen byte budget. An overflow or excess returns an error before the caller allocates those buffers; an already-active process-wide operation returns `Error::Busy`. The estimate is an admission policy, not an operating-system-enforced allocation cap. A different cached model family is evicted before admission returns.
+`RemovalService::admit(&self, model_id: &str, transient_bytes: u64, budget_bytes: u64) -> Result<RemovalPermit<'_>>` checks the catalog model's `memory_mib` working-set estimate (MiB × 1,048,576) plus the caller's conservative bound for all overlapping transient buffers with checked arithmetic against the frozen byte budget. An overflow or excess returns an error before the caller allocates those buffers; an already-active process-wide operation returns `Error::Busy`. The estimate is an admission policy, not an operating-system-enforced allocation cap. An incompatible ONNX plan is evicted before admission returns. OSOR and an ONNX companion can remain resident only within the same frozen budget; each inference rechecks the estimates before loading.
 
 Hold the returned permit across selection/hole/region and crop construction, inference, and any noninterruptible worker drain. Bind it mutably and call `permit.infer(&input, control) -> Result<RemovalOutput>` once. When output must outlive the worker, consume the permit with `permit.into_reservation()` and keep the owned `RemovalReservation` with the output until it is applied or discarded. The reservation can outlive the service; dropping it releases process-wide admission. Arrange ownership so the output buffers are dropped before the reservation, including error, cancellation, and discard paths. Dropping an untransferred permit also releases admission. The model ID is fixed at admission.
 
@@ -19,8 +19,11 @@ Hold the returned permit across selection/hole/region and crop construction, inf
 `admit_models(&[model_ids], transient_bytes, budget_bytes)` returns a
 `RemovalBatchPermit` for at most 32 sequential forwards. It admits the largest
 model working set plus the caller's complete retained-buffer estimate. Each
-`permit.infer(model_id, input, control)` checks membership and evicts the previous
-model family before loading another. A failed forward ends the batch; the lease
+`permit.infer(model_id, input, control)` checks membership and prepares only the
+model actually requested. Batch admission preserves eligible warm models even
+when the first listed model is not needed. Companion models remain resident only
+when their combined estimates fit budget minus transients; tighter budgets retain
+the previous sequential-eviction behavior. A failed forward ends the batch; the lease
 still remains held. Capture replay identity with `permit.model_sha256(model_id)`
 and transfer ownership with `permit.into_reservation()` through preview apply or
 discard. Retained buffers must be dropped before that reservation.
@@ -87,6 +90,13 @@ bundle for subsequent qualification. It does not test application HTTPS transpor
 or infer image-quality acceptance.
 
 ## Optional real-model check
+
+The ignored `real_recommended_batches_reuse_both_models_within_budget` test requires
+`PHOTOCRAFT_ML_LAMA` and `PHOTOCRAFT_ML_OSOR_BUNDLE`. It runs two sequential
+LaMa-to-OSOR batches through separate service instances at a 48 GiB allowance and
+checks that neither model reloads in the second batch. The OSOR service smoke
+also checks warm reuse when the next batch lists LaMa first but runs only OSOR.
+These are cache-lifecycle checks, not image-quality or throughput comparisons.
 
 The ignored `real_models_match_reference_and_reuse_one_warm_family` test requires `PHOTOCRAFT_ML_LAMA`, `PHOTOCRAFT_ML_MIGAN` and `PHOTOCRAFT_ML_ORACLE_DIR`. The oracle directory supplies a 512×512 interleaved RGB byte image (`image.rgb`), a 512×512 binary white-is-hole mask (`mask.bin`), and interleaved RGB byte outputs from an independent reference (`lama.rgb`, `migan.rgb`). Both artifacts are imported and verified by their catalog hashes. The test compares decoded samples within one byte value and checks cold/warm loads. Fixtures and test adapters do not qualify a model or platform; these comparisons cover only the supplied scene.
 
