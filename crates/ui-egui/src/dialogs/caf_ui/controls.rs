@@ -247,7 +247,7 @@ mod selection_modifier_tests {
             pointer(&mut app, ToolEvent::Down { x: 8.0, y: 8.0, pressure: 1.0 }, egui::Modifiers::NONE);
             app.ui.shell.sticky_shift = false;
             app.ui.shell.sticky_alt = false;
-            for (x, y) in [(30.0, 8.0), (30.0, 30.0), (8.0, 30.0)] {
+            for (x, y) in [(20.0, 8.0), (20.0, 20.0), (8.0, 20.0)] {
                 pointer(&mut app, ToolEvent::Move { x, y, pressure: 1.0 }, egui::Modifiers::NONE);
             }
             pointer(&mut app, ToolEvent::Up { x: 8.0, y: 8.0 }, egui::Modifiers::NONE);
