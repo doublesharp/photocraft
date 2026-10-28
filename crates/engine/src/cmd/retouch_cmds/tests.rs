@@ -3116,6 +3116,43 @@ fn removal_preview_keeps_document_history_and_journal_until_explicit_apply() {
     assert_eq!(s.active().unwrap().doc, before);
 }
 
+#[test]
+fn removal_preview_survives_unrelated_preferences_during_and_after_inference() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    let source = s.active().unwrap().doc.clone();
+    let history = s.active().unwrap().history.past_len();
+    let journal = s.journal.clone();
+    let params = json!({"points":[[46,30]],"size":10,"method":"ai","preview":true});
+    let crate::jobs::Started::Job(job) = s.start("paint.remove", params).unwrap() else {
+        panic!("expected background Remove job");
+    };
+    // The shell persists the selected tool, options and brush after the stroke is released,
+    // after inference has captured its context. Those preferences do not alter this request.
+    s.prefs.edit(|prefs| {
+        prefs.selected_tool = json!("Remove");
+        prefs.tool_options = json!({"remove_repair_type":"object"});
+        prefs.last_brush = json!({"size":10});
+    });
+    let result = s.wait_job(job).expect("saving tool state must not discard a completed removal");
+    assert_eq!(result["preview"], true);
+    assert!(std::sync::Arc::ptr_eq(&source, &s.active().unwrap().doc));
+    assert_eq!(s.active().unwrap().history.past_len(), history);
+    assert_eq!(s.journal, journal);
+    let (candidate, id) = s.removal_preview_document().unwrap();
+    // Further view-only preference writes must not hide a ready preview or prevent Apply.
+    s.edit_prefs(|prefs| prefs.interface.show_tooltips = !prefs.interface.show_tooltips);
+    assert_eq!(s.removal_preview_status()["ready"], true);
+    let applied = s.execute("remove.preview.apply", json!({"id":id})).unwrap();
+    assert_eq!(applied["applied"], true);
+    assert_eq!(s.active().unwrap().doc, candidate);
+    assert_eq!(s.active().unwrap().history.past_len(), history + 1);
+    assert_eq!(backend.0.lock().unwrap().len(), 1);
+    assert!(s.undo());
+    assert_eq!(s.active().unwrap().doc, source);
+}
+
 #[derive(Default)]
 struct OsorPreviewBackend(std::sync::atomic::AtomicUsize);
 impl photocraft_ml::RemovalBackend for OsorPreviewBackend {
@@ -3251,7 +3288,7 @@ fn removal_preview_discard_releases_admission_without_history_or_journal() {
 #[test]
 fn removal_preview_rejects_changed_and_restored_context_and_releases_admission() {
     let _guard = lock_ai_tests();
-    for scenario in 0..5 {
+    for scenario in 0..6 {
         let mut s = square_session(8, "rgb");
         enable_osor_preview(&mut s);
         s.execute("paint.remove", osor_params(true, true)).unwrap();
@@ -3273,10 +3310,11 @@ fn removal_preview_rejects_changed_and_restored_context_and_releases_admission()
                 s.execute("select.rect", json!({"x":0,"y":0,"width":8,"height":8})).unwrap();
                 assert!(s.undo());
             }
-            _ => {
+            4 => {
                 s.execute("file.new", json!({"width":8,"height":8})).unwrap();
                 assert!(s.set_active(0));
             }
+            _ => s.prefs.edit(|prefs| prefs.generative_remove.enabled = false),
         }
         let before = s.active().unwrap().doc.clone();
         let history = s.active().unwrap().history.past_len();

@@ -1372,3 +1372,82 @@ fn hybrid_gesture_does_not_retarget_if_repair_hint_changes_while_pressed() {
     assert!(app.ui.status.contains("cancelled"), "{}", app.ui.status);
     assert!(!app.session.has_jobs());
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn removal_preview_survives_tool_persistence_and_leaves_full_screen() {
+    let _guard = REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    struct Black;
+    impl photocraft_ml::RemovalBackend for Black {
+        fn ready(&self, _: &str) -> bool {
+            true
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.; input.rgb.len()], edit_alpha: None, inference_scale: 1., load_ms: 0., forward_ms: 0. })
+        }
+    }
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = app();
+        app.run("file.new", json!({"width":100,"height":60,"background":"white"})).unwrap();
+        app.session.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::new(None).with_backend(std::sync::Arc::new(Black))));
+        app.session.edit_prefs(|p| p.generative_remove.enabled = true);
+        app.ui.tool = Tool::Remove;
+        app.background_jobs = true;
+        app
+    });
+    h.run_steps(4);
+    let ctx = h.ctx.clone();
+    let source = h.state().session.active().unwrap().doc.clone();
+    let history = h.state().session.active().unwrap().history.past_len();
+    let journal = h.state().session.journal.len();
+    let saved_brush = h.state().session.prefs().last_brush.clone();
+    let saved_options = h.state().session.prefs().tool_options.clone();
+    h.state_mut().run("tools.setBrush", json!({"size":23})).unwrap();
+    h.state_mut().ui.tool_options.remove_after_each_stroke = false;
+    let started = h.state_mut().run("paint.remove", json!({"method":"ai","modelId":"lama","points":[[50,30]],"size":16,"preview":true})).unwrap();
+    let job = photocraft_engine::jobs::JobId(started["job"].as_u64().unwrap());
+    let submitted_prefs_rev = h.state().session.prefs.rev();
+
+    // Stroke release saves the brush and options at the end of the same frame, after submission.
+    // Those preferences describe future gestures; they do not change this job's frozen input.
+    crate::last_brush::persist(h.state_mut(), &ctx);
+    crate::tool_memory::persist(h.state_mut(), &ctx);
+    assert_ne!(h.state().session.prefs().last_brush, saved_brush);
+    assert_ne!(h.state().session.prefs().tool_options, saved_options);
+    assert!(h.state().session.prefs.rev() > submitted_prefs_rev);
+    let result = h.state_mut().session.wait_job(job).expect("saving tool state must not discard a completed Remove candidate");
+    assert_eq!(result["preview"], true);
+    crate::jobs_ui::tick(h.state_mut(), &ctx);
+    let (candidate, preview_id) = h.state().session.removal_preview_document().unwrap();
+
+    // The candidate also survives view-only persistence while displayed in full screen.
+    crate::menus::invoke(h.state_mut(), &ctx, "view.screenMode.fullScreen", json!({})).unwrap();
+    h.state_mut().ui.view.show.layer_edges = true;
+    let published_prefs_rev = h.state().session.prefs.rev();
+    crate::view_cmds::persist(h.state_mut(), &ctx);
+    assert!(h.state().session.prefs.rev() > published_prefs_rev);
+    h.run_steps(4);
+    assert_eq!(h.state().session.removal_preview_status()["id"], preview_id);
+    let index = h.state().session.active_index().unwrap();
+    let (shown, _) = crate::canvas::display_doc(h.state_mut(), index);
+    assert!(std::sync::Arc::ptr_eq(&shown, &candidate), "the canvas must keep showing the reviewed candidate");
+    assert!(std::sync::Arc::ptr_eq(&source, &h.state().session.active().unwrap().doc));
+
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().session.removal_preview_document().is_none(), "first Escape discards the candidate");
+    assert_eq!(h.state().ui.view.screen_mode, "fullScreen");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert_eq!(h.state().ui.view.screen_mode, "standard", "next Escape returns to the main view");
+    assert!(std::sync::Arc::ptr_eq(&source, &h.state().session.active().unwrap().doc));
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), history);
+    assert_eq!(h.state().session.journal.len(), journal + 1, "only changing the brush was journalled");
+    assert!(!h.state().ui.status_error, "{}", h.state().ui.status);
+}

@@ -14,7 +14,7 @@ pub(crate) struct Capture {
     revision: u64,
     active_generation: u64,
     context_generation: u64,
-    prefs_revision: u64,
+    removal_prefs: crate::prefs::GenerativeRemove,
     active_layer: Option<LayerId>,
     target: crate::channel_cmds::ChannelTarget,
     working_rgb: String,
@@ -28,7 +28,7 @@ impl Capture {
             revision: st.revision,
             active_generation: s.active_generation(),
             context_generation: s.remove_context_generation(),
-            prefs_revision: s.prefs.rev(),
+            removal_prefs: s.prefs().generative_remove.clone(),
             active_layer: st.active_layer,
             target: st.channel_view.target,
             working_rgb: s.color.settings.working_rgb.clone(),
@@ -44,7 +44,9 @@ impl Capture {
                 && crate::float_cmds::floating(st).is_none()
         }) && s.active_generation() == self.active_generation
             && s.remove_context_generation() == self.context_generation
-            && s.prefs.rev() == self.prefs_revision
+            // Brush, tool and view preferences are persisted after stroke submission. Only
+            // removal settings affect this candidate; generation also catches change-and-restore.
+            && s.prefs().generative_remove == self.removal_prefs
             && s.color.settings.working_rgb == self.working_rgb
     }
 }
