@@ -79,8 +79,8 @@ The current quick performance gate exited successfully, but marked the shared-ho
 New setup strings use English fallback where translations are missing. These checks do not establish Photoshop parity, broad removal quality, signed packaging, or Linux/Windows runtime acceptance. Moebius refinement has no adapter; the prior broad pilot did not justify adding it unconditionally. Prompted Generative Fill/Expand and learned browser execution remain separate work.
 
 The current Cargo package/library is `osor`, pinned to published commit `94584f64`
-in the unchanged `doublesharp/osor-rs` Git repository. Upstream main `8380bfd1`
-contains that commit; PhotoCraft does not advance to the newer main revision.
+in the unchanged `doublesharp/osor-rs` Git repository. PhotoCraft keeps this
+immutable dependency pin when upstream main changes.
 Initial offline validation seeded the existing Cargo Git cache from the supplied
 local checkout; that remains historical provenance, separate from remote resolution.
 

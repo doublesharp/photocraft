@@ -183,8 +183,8 @@ the pinned manifest digest and shared-host timings; this smoke does not establis
 independent-reference accuracy or visual removal quality.
 
 The Cargo package and Rust library are named `osor`; the Git repository remains
-`doublesharp/osor-rs`. Revision `94584f64` is published and is an ancestor of
-upstream main `8380bfd1`; PhotoCraft remains pinned to `94584f64`. Initial offline
+`doublesharp/osor-rs`. Revision `94584f64` is published. PhotoCraft keeps this
+immutable dependency pin when upstream main changes. Initial offline
 validation seeded the existing Cargo Git cache from the supplied local checkout.
 That cache provenance is separate from fresh remote resolution.
 
