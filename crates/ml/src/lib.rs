@@ -18,7 +18,7 @@ mod resample;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-inference"))]
 mod runtime;
 #[cfg(all(not(target_arch = "wasm32"), feature = "osor"))]
-pub use osor_rs::Backend as OsorBackend;
+pub use osor::Backend as OsorBackend;
 #[cfg(not(target_arch = "wasm32"))]
 mod store;
 

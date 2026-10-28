@@ -2,7 +2,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use osor_rs::{DType, InferenceInput, InferenceLimits, LoadOptions, Osor, Tensor};
+use osor::{DType, InferenceInput, InferenceLimits, LoadOptions, Osor, Tensor};
 
 use crate::resample::Geometry;
 use crate::store::osor_reference::{MAX_DECODED_WEIGHTS, Reference};
@@ -18,10 +18,10 @@ pub(crate) fn clear_cache() {
     crate::cache::clear_model("osor-sdxl");
 }
 
-fn error(error: osor_rs::Error) -> Error {
+fn error(error: osor::Error) -> Error {
     match error {
-        osor_rs::Error::Cancelled => Error::Cancelled,
-        osor_rs::Error::Unavailable(reason) => Error::Inference(format!("OSOR backend unavailable: {reason}")),
+        osor::Error::Cancelled => Error::Cancelled,
+        osor::Error::Unavailable(reason) => Error::Inference(format!("OSOR backend unavailable: {reason}")),
         other => Error::Inference(format!("OSOR: {other}")),
     }
 }
@@ -41,10 +41,10 @@ fn load(reference: &Reference, backend: OsorBackend) -> Result<(Cached, f64)> {
         &reference.path,
         LoadOptions { backend, dtype: DType::F32, limits: InferenceLimits { max_batch: 1, max_pixels: 512 * 512 } },
         reference.manifest_sha256()?,
-        &osor_rs::artifact::ArtifactLimits {
+        &osor::artifact::ArtifactLimits {
             max_file_bytes: 16 * 1024 * 1024 * 1024,
             max_total_tensor_bytes: MAX_DECODED_WEIGHTS,
-            ..osor_rs::artifact::ArtifactLimits::default()
+            ..osor::artifact::ArtifactLimits::default()
         },
     )
     .map_err(error)?;
@@ -86,9 +86,9 @@ impl Drop for CancelMonitorCompletion<'_> {
     }
 }
 
-fn with_cancellation<T>(ctl: &dyn RemovalControl, run: impl FnOnce(&osor_rs::CancellationToken) -> Result<T>) -> Result<T> {
+fn with_cancellation<T>(ctl: &dyn RemovalControl, run: impl FnOnce(&osor::CancellationToken) -> Result<T>) -> Result<T> {
     check(ctl)?;
-    let cancellation = osor_rs::CancellationToken::new();
+    let cancellation = osor::CancellationToken::new();
     let finished = AtomicBool::new(false);
     std::thread::scope(|scope| {
         // The app owns its cancellation flag; the library checks its token inside blocks.
@@ -133,10 +133,10 @@ fn forward(model: &Osor, input: &RemovalInput, ctl: &dyn RemovalControl) -> Resu
                 cancellation,
                 &mut |_, _| {
                     if ctl.cancelled() {
-                        return Err(osor_rs::Error::Cancelled);
+                        return Err(osor::Error::Cancelled);
                     }
                     stage = stage.saturating_add(1);
-                    ctl.progress(0.2 + 0.7 * stage as f32 / osor_rs::pipeline::STAGES.len() as f32, "Removing object and effects locally");
+                    ctl.progress(0.2 + 0.7 * stage as f32 / osor::pipeline::STAGES.len() as f32, "Removing object and effects locally");
                     Ok(())
                 },
             )

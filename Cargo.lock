@@ -5583,9 +5583,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "osor-rs"
+name = "osor"
 version = "0.2.0"
-source = "git+https://github.com/doublesharp/osor-rs?rev=1b299a1d4bcfc15e10e81a4ba766d479ce8e27ed#1b299a1d4bcfc15e10e81a4ba766d479ce8e27ed"
+source = "git+https://github.com/doublesharp/osor-rs?rev=94584f64f2a94cb6228239d45bf0ebb4830ef1df#94584f64f2a94cb6228239d45bf0ebb4830ef1df"
 dependencies = [
  "candle-core",
  "candle-metal-kernels",
@@ -6114,7 +6114,7 @@ dependencies = [
  "cap-primitives",
  "cap-std",
  "getrandom 0.3.4",
- "osor-rs",
+ "osor",
  "same-file",
  "serde",
  "serde_json",

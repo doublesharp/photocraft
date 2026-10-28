@@ -5,7 +5,7 @@ use std::io::{Seek, SeekFrom, Write};
 
 use super::{NativeService, capability::StagedDirectory, osor_reference, verify_pinned_reader};
 use crate::{Error, ModelArtifact, RemovalControl, Result, check};
-use osor_rs::{
+use osor::{
     artifact::{ArtifactLimits, InputDigests, Manifest, SourceProvenance},
     conversion::{ConversionEvent, ConversionInput, ConversionOptions, ConversionOutput, ConversionReaders, ConversionSink, convert_with_io},
 };
@@ -14,25 +14,25 @@ pub(super) fn install(service: &NativeService, ctl: &dyn RemovalControl) -> Resu
     install_recipe(service, crate::catalog::OSOR_ARTIFACTS, ctl, convert)
 }
 
-fn native_error(error: Error) -> osor_rs::Error {
+fn native_error(error: Error) -> osor::Error {
     match error {
-        Error::Cancelled => osor_rs::Error::Cancelled,
-        Error::Io(error) => osor_rs::Error::Io(error),
-        other => osor_rs::Error::InvalidArtifact(other.to_string()),
+        Error::Cancelled => osor::Error::Cancelled,
+        Error::Io(error) => osor::Error::Io(error),
+        other => osor::Error::InvalidArtifact(other.to_string()),
     }
 }
 
 struct Sink<'a, 'b>(&'a mut StagedDirectory<'b>);
 impl ConversionSink for Sink<'_, '_> {
     type Writer = File;
-    fn create_new(&mut self, output: ConversionOutput) -> osor_rs::Result<File> {
+    fn create_new(&mut self, output: ConversionOutput) -> osor::Result<File> {
         self.0.create_file(output.file_name()).map_err(native_error)
     }
-    fn finish(&mut self, _: ConversionOutput, file: File) -> osor_rs::Result<()> {
+    fn finish(&mut self, _: ConversionOutput, file: File) -> osor::Result<()> {
         file.sync_all()?;
         self.0.ensure_owned().map_err(native_error)
     }
-    fn publish_manifest(&mut self, bytes: &[u8]) -> osor_rs::Result<()> {
+    fn publish_manifest(&mut self, bytes: &[u8]) -> osor::Result<()> {
         self.0.publish_manifest(bytes).map_err(native_error)
     }
 }
@@ -65,7 +65,7 @@ fn convert(stage: &mut StagedDirectory<'_>, files: Vec<File>, ctl: &dyn RemovalC
             checkpoint: checkpoint_pin.sha256.into(),
             prompt: prompt_pin.sha256.into(),
         },
-        scheduler: osor_rs::scheduler::SchedulerConfig::default(),
+        scheduler: osor::scheduler::SchedulerConfig::default(),
         limits: ArtifactLimits { max_file_bytes: 16 * 1024 * 1024 * 1024, max_total_tensor_bytes: 24 * 1024 * 1024 * 1024, ..ArtifactLimits::default() },
     };
     let mut progress = 0.72_f32;
@@ -102,7 +102,7 @@ fn convert(stage: &mut StagedDirectory<'_>, files: Vec<File>, ctl: &dyn RemovalC
         check(ctl).map_err(native_error)
     })
     .map_err(|error| match error {
-        osor_rs::Error::Cancelled => Error::Cancelled,
+        osor::Error::Cancelled => Error::Cancelled,
         other => Error::Inference(format!("OSOR preparation: {other}")),
     })
 }

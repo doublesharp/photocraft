@@ -11,7 +11,7 @@ use super::{
     capability::{Partial, StoreDir, same_file},
 };
 use crate::{Error, ModelStatus, RemovalControl, Result, check};
-use osor_rs::artifact::{MANIFEST_FILE, Manifest, PROMPT_FILE, UNET_FILE, VAE_FILE};
+use osor::artifact::{MANIFEST_FILE, Manifest, PROMPT_FILE, UNET_FILE, VAE_FILE};
 use serde::{Deserialize, Serialize};
 
 pub(super) const RECEIPT: &str = "osor-sdxl-reference.json";

@@ -854,7 +854,7 @@ fn review_truncated_catalog_file_remains_visible_and_removable() {
 
 #[cfg(feature = "osor")]
 fn osor_receipt_fixture(path: &Path) {
-    use osor_rs::artifact::{BundleDigests, InputDigests, Manifest, SourceProvenance};
+    use osor::artifact::{BundleDigests, InputDigests, Manifest, SourceProvenance};
     fs::create_dir(path).unwrap();
     // Store-only fixture: valid tiny tensor containers, deliberately not a neural graph.
     for (index, name) in ["unet.safetensors", "vae.safetensors", "prompt.safetensors"].into_iter().enumerate() {
@@ -868,8 +868,8 @@ fn osor_receipt_fixture(path: &Path) {
     let digest = |name| format!("{:x}", Sha256::digest(fs::read(path.join(name)).unwrap()));
     let manifest = Manifest {
         schema_version: 1,
-        upstream_revision: osor_rs::UPSTREAM_REVISION.into(),
-        pipeline: osor_rs::artifact::PIPELINE.into(),
+        upstream_revision: osor::UPSTREAM_REVISION.into(),
+        pipeline: osor::artifact::PIPELINE.into(),
         base_model: provenance.clone(),
         vae_model: provenance.clone(),
         checkpoint: provenance.clone(),
@@ -877,7 +877,7 @@ fn osor_receipt_fixture(path: &Path) {
         config: None,
         input_sha256: InputDigests { base_unet: "2".repeat(64), base_vae: "3".repeat(64), checkpoint: "4".repeat(64), prompt: "5".repeat(64) },
         sha256: BundleDigests { unet: digest("unet.safetensors"), vae: digest("vae.safetensors"), prompt: digest("prompt.safetensors") },
-        scheduler: osor_rs::scheduler::SchedulerConfig::default(),
+        scheduler: osor::scheduler::SchedulerConfig::default(),
         timestep: 400,
         vae_scaling_factor: 0.13025,
         adapter_rank: 256,
@@ -1189,7 +1189,7 @@ fn osor_admitted_install_rejects_failed_transfer_and_leaves_no_install() {
 }
 
 #[cfg(feature = "osor")]
-fn prepare_fixture_bundle(stage: &mut capability::StagedDirectory<'_>, fixture: &Path) -> Result<osor_rs::artifact::Manifest> {
+fn prepare_fixture_bundle(stage: &mut capability::StagedDirectory<'_>, fixture: &Path) -> Result<osor::artifact::Manifest> {
     for name in ["unet.safetensors", "vae.safetensors", "prompt.safetensors", "manifest.json"] {
         stage.create_file(name)?.write_all(&fs::read(fixture.join(name))?)?;
     }
@@ -1570,7 +1570,7 @@ fn real_osor_installer_converts_pinned_local_streams_into_managed_bundle() {
     let receipt: serde_json::Value = serde_json::from_slice(&fs::read(root.join(osor_reference::RECEIPT)).unwrap()).unwrap();
     assert!(receipt["managed"].as_str().is_some());
     let bundle = PathBuf::from(receipt["path"].as_str().unwrap());
-    let manifest: osor_rs::artifact::Manifest = serde_json::from_slice(&fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    let manifest: osor::artifact::Manifest = serde_json::from_slice(&fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
     let expected = crate::catalog::OSOR_ARTIFACTS;
     assert_eq!(
         [

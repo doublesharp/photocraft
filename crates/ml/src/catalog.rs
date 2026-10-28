@@ -116,7 +116,7 @@ pub(crate) const CATALOG: &[ModelSpec] = &[
         url: "",
         license: "CreativeML Open RAIL++-M (weights; use restrictions)",
         source: "https://github.com/Zhouqm-Git/osor",
-        backend: "osor-rs CPU / optional Metal",
+        backend: "osor CPU / optional Metal",
         input_size: 512,
         memory_mib: 40960,
         download_bytes: 8_415_101_006,

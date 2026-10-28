@@ -103,10 +103,10 @@ The ignored `real_models_match_reference_and_reuse_one_warm_family` test require
 ## OSOR-SDXL Phase II bridge
 
 The `osor-sdxl` catalog entry is always discoverable. Native `osor` enables the
-`osor-rs` adapter and automatically compiles its Metal backend on macOS; other
+`osor` adapter and automatically compiles its Metal backend on macOS; other
 native platforms compile the CPU backend. `osor-metal` remains a compatibility
 feature alias. Desktop and CLI default features include `local-ai` and `osor`.
-The library is pinned to [osor-rs v0.2.0, revision 1b299a1d4bcfc15e10e81a4ba766d479ce8e27ed](https://github.com/doublesharp/osor-rs/tree/1b299a1d4bcfc15e10e81a4ba766d479ce8e27ed),
+The library is pinned to [osor v0.2.0, revision 94584f64f2a94cb6228239d45bf0ebb4830ef1df](https://github.com/doublesharp/osor-rs/tree/94584f64f2a94cb6228239d45bf0ebb4830ef1df),
 using Candle 0.11.0. Updating it requires renewing the affected loading, conversion
 and inference checks.
 The desktop application's native setup selects Metal on macOS and CPU elsewhere;
@@ -181,3 +181,10 @@ repetition and retained-output admission, then removes only its receipt. Reserve
 single real-model memory window before running it. It prints a JSON result with
 the pinned manifest digest and shared-host timings; this smoke does not establish
 independent-reference accuracy or visual removal quality.
+
+The Cargo package and Rust library are named `osor`; the Git repository remains
+`doublesharp/osor-rs`. Revision `94584f64` is initially available only in the supplied
+local checkout. A fresh remote checkout requires that immutable commit to be
+published; local offline validation imports its Git objects from the supplied checkout.
+Historical model evidence above names its actual old revision and is not a claim
+that all intervening runtime changes have been qualified.
