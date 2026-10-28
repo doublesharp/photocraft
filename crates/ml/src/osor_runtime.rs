@@ -1,6 +1,7 @@
 //! Synchronous bounded OSOR bridge. The caller's process-wide lease drains every forward.
 use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use osor_rs::{DType, InferenceInput, InferenceLimits, LoadOptions, Osor, Tensor};
 
@@ -75,6 +76,43 @@ pub(crate) fn infer(reference: &Reference, backend: OsorBackend, input: &Removal
     Ok(output)
 }
 
+struct CancelMonitorCompletion<'a> {
+    finished: &'a AtomicBool,
+    monitor: std::thread::Thread,
+}
+
+impl Drop for CancelMonitorCompletion<'_> {
+    fn drop(&mut self) {
+        self.finished.store(true, Ordering::Release);
+        self.monitor.unpark();
+    }
+}
+
+fn with_cancellation<T>(ctl: &dyn RemovalControl, run: impl FnOnce(&osor_rs::CancellationToken) -> Result<T>) -> Result<T> {
+    check(ctl)?;
+    let cancellation = osor_rs::CancellationToken::new();
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        // The app owns its cancellation flag; the library checks its token inside blocks.
+        // Keep one bounded monitor for this forward, including while no observer is called.
+        let monitor = std::thread::Builder::new().name("photocraft-osor-cancel".into()).spawn_scoped(scope, || {
+            while !finished.load(Ordering::Acquire) {
+                if ctl.cancelled() {
+                    cancellation.cancel();
+                    return;
+                }
+                std::thread::park_timeout(Duration::from_millis(10));
+            }
+        })?;
+        // Also wake the monitor during unwinding, so a backend panic cannot strand scope's join.
+        let completion = CancelMonitorCompletion { finished: &finished, monitor: monitor.thread().clone() };
+        let result = run(&cancellation);
+        drop(completion);
+        monitor.join().map_err(|_| Error::Inference("the local removal cancellation monitor failed".into()))?;
+        result
+    })
+}
+
 fn forward(model: &Osor, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
     check(ctl)?;
     let geometry = Geometry::osor(input.width, input.height)?;
@@ -90,16 +128,22 @@ fn forward(model: &Osor, input: &RemovalInput, ctl: &dyn RemovalControl) -> Resu
         .map_err(|e| Error::Inference(e.to_string()))?;
     let started = Instant::now();
     let mut stage = 0usize;
-    let result = model
-        .infer_with_observer(InferenceInput { image: &image, mask: &mask, posterior_noise: &posterior, diffusion_noise: &diffusion }, &mut |_, _| {
-            if ctl.cancelled() {
-                return Err(osor_rs::Error::Cancelled);
-            }
-            stage = stage.saturating_add(1);
-            ctl.progress(0.2 + 0.7 * stage as f32 / osor_rs::pipeline::STAGES.len() as f32, "Removing object and effects locally");
-            Ok(())
-        })
-        .map_err(error)?;
+    let result = with_cancellation(ctl, |cancellation| {
+        model
+            .infer_with_cancellation(
+                InferenceInput { image: &image, mask: &mask, posterior_noise: &posterior, diffusion_noise: &diffusion },
+                cancellation,
+                &mut |_, _| {
+                    if ctl.cancelled() {
+                        return Err(osor_rs::Error::Cancelled);
+                    }
+                    stage = stage.saturating_add(1);
+                    ctl.progress(0.2 + 0.7 * stage as f32 / osor_rs::pipeline::STAGES.len() as f32, "Removing object and effects locally");
+                    Ok(())
+                },
+            )
+            .map_err(error)
+    })?;
     model.device().synchronize().map_err(|e| Error::Inference(e.to_string()))?;
     let forward_ms = started.elapsed().as_secs_f64() * 1000.;
     check(ctl)?;
@@ -142,6 +186,38 @@ fn noise(count: usize, mut state: u64) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancellation_reaches_a_backend_block_without_an_observer_callback() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Control(AtomicBool);
+        impl RemovalControl for Control {
+            fn cancelled(&self) -> bool {
+                self.0.load(Ordering::Acquire)
+            }
+            fn progress(&self, _: f32, _: &str) {}
+        }
+        let control = Control(AtomicBool::new(false));
+        let result = with_cancellation(&control, |token| {
+            // Simulate a long block that checks the library token but emits no stage event.
+            control.0.store(true, Ordering::Release);
+            let deadline = Instant::now() + std::time::Duration::from_secs(1);
+            while !token.is_cancelled() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            token.check().map_err(error)
+        });
+        assert!(matches!(result, Err(Error::Cancelled)), "a cancellation during a block must reach the library without a stage observer: {result:?}");
+    }
+
+    #[test]
+    fn cancellation_monitor_finishes_on_success_and_backend_unwind() {
+        assert_eq!(with_cancellation(&crate::NoopControl, |_| Ok(42)).unwrap(), 42);
+        let result = std::panic::catch_unwind(|| {
+            let _: Result<()> = with_cancellation(&crate::NoopControl, |_| panic!("synthetic backend panic"));
+        });
+        assert!(result.is_err(), "the scoped monitor must stop while a backend unwinds");
+    }
+
     #[test]
     fn explicit_noise_repeats_and_uses_separate_finite_normal_streams() {
         let posterior = noise(16_384, 0x5048_4f54_4f43_5241);

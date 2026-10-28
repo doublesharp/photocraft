@@ -58,12 +58,26 @@ downloaded model removes its fixed owned bundle files and receipt; imported
 external bundles retain their original weights.
 
 The mirror's fixed prompt is F32 and differs numerically from the earlier local
-F16-export qualification. The actual managed bundle was independently compared
-on one 704×368 photo against a fresh upstream PyTorch/MPS reference using the
-previously qualified Metal inference graph: all 18 stages passed the unchanged
-frozen numerical limits. Decoded RGB maximum absolute error was 0.00092411 and
-RMS error was 0.000008951. This qualifies that bounded numerical scene; broader
-visual removal quality and application journeys require separate evidence.
+F16-export qualification. On 2026-10-28, published osor-rs v0.2.0 (`1b299a1d`)
+replayed the retained managed bundle on Metal/F32 against the frozen independent
+PyTorch/MPS reference for one 704×368 photo. The original mask and both captured
+noise tensors were reused; all 18 stages passed the unchanged frozen limits.
+Decoded RGB maximum absolute error was 0.0009236335754394531 and RMS error was
+0.000008959910624121942. The reference was retained from the previous qualification;
+no new PyTorch reference run was performed. This qualifies that bounded CLI scene,
+separately from the application's 512 px long-side bridge and broader removal quality.
+Stage-synchronized CLI timings are diagnostic, not normal application performance.
+
+The current pin also passed the retained-bundle Metal/F32 service smoke: cold and
+warm 101×47 input restored finite, source-sized RGB/alpha with zero repeat difference
+and retained-output admission. A separate, preconfigured native macOS app run on a
+procedural 256×192 image passed unrelated preference/brush/view writes during OSOR,
+preview source preservation, Escape discard and main-view recovery, Enter Apply,
+exact PNG Undo, warm in-flight cancellation, admission drain, a successful next
+removal and clean private-process exit. Full model preparation and application HTTPS
+transfer were not rerun for v0.2.0; the 66.14-second preparation and 24 MP release
+measurements in the application documentation remain historical `f9d4b2f9` results.
+
 The ignored
 `real_osor_installer_converts_pinned_local_streams_into_managed_bundle` test
 requires explicit `PHOTOCRAFT_ML_OSOR_INSTALL_ROOT`,
@@ -82,8 +96,9 @@ The `osor-sdxl` catalog entry is always discoverable. Native `osor` enables the
 `osor-rs` adapter and automatically compiles its Metal backend on macOS; other
 native platforms compile the CPU backend. `osor-metal` remains a compatibility
 feature alias. Desktop and CLI default features include `local-ai` and `osor`.
-The library is pinned to [osor-rs revision f9d4b2f9a2095a6befeb983240c58ccb19a29c9b](https://github.com/doublesharp/osor-rs/tree/f9d4b2f9a2095a6befeb983240c58ccb19a29c9b);
-updating it requires renewing the affected loading, conversion and inference checks.
+The library is pinned to [osor-rs v0.2.0, revision 1b299a1d4bcfc15e10e81a4ba766d479ce8e27ed](https://github.com/doublesharp/osor-rs/tree/1b299a1d4bcfc15e10e81a4ba766d479ce8e27ed),
+using Candle 0.11.0. Updating it requires renewing the affected loading, conversion
+and inference checks.
 The desktop application's native setup selects Metal on macOS and CPU elsewhere;
 the bare library service defaults to CPU/F32. Applications
 can explicitly construct `RemovalService::new(directory).with_osor_backend(OsorBackend::Metal { ordinal: 0 })`;
@@ -128,8 +143,14 @@ support; consumers must not multiply this alpha into that RGB again. LaMa and MI
 return `edit_alpha: None`.
 
 OSOR shares the existing process-wide operation permit and single warm-family rule
-with the ONNX adapters. Device work is synchronized even when an observer cancels,
-and the output reservation remains owned until apply/discard. Admission currently
+with the ONNX adapters. The bridge calls `infer_with_cancellation`, connecting
+`RemovalControl` to the library token with one scoped monitor per forward. The
+monitor checks cancellation every 10 ms, including between stage-observer calls;
+the library checks that token at cooperative checkpoints inside model blocks.
+Cancellation is not an immediate device interrupt: device work is synchronized
+before admission is released, and a completed output reservation remains owned
+until apply/discard. The existing explicit noise streams and input geometry are
+unchanged by the library update. Admission currently
 uses a conservative **40 GiB** model working-set estimate plus caller-owned transient
 buffers. The minimum retained input/output bound is **32 bytes per source pixel**
 for OSOR (including learned alpha), versus 28 for the current ONNX adapters. This is

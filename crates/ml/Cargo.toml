@@ -25,10 +25,10 @@ tract-onnx = { version = "=0.23.9", optional = true }
 
 # Select Metal only on macOS; other native defaults retain CPU support.
 [target.'cfg(all(not(target_arch = "wasm32"), target_os = "macos"))'.dependencies]
-osor-rs = { git = "https://github.com/doublesharp/osor-rs", rev = "f9d4b2f9a2095a6befeb983240c58ccb19a29c9b", optional = true, features = ["metal"] }
+osor-rs = { git = "https://github.com/doublesharp/osor-rs", rev = "1b299a1d4bcfc15e10e81a4ba766d479ce8e27ed", optional = true, features = ["metal"] }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))'.dependencies]
-osor-rs = { git = "https://github.com/doublesharp/osor-rs", rev = "f9d4b2f9a2095a6befeb983240c58ccb19a29c9b", optional = true }
+osor-rs = { git = "https://github.com/doublesharp/osor-rs", rev = "1b299a1d4bcfc15e10e81a4ba766d479ce8e27ed", optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
@@ -41,4 +41,4 @@ same-file = "=1.0.6"
 
 # Immutable source qualified with the native integration; see README before updating.
 [package.metadata.osor-development]
-tested-source-revision = "f9d4b2f9a2095a6befeb983240c58ccb19a29c9b"
+tested-source-revision = "1b299a1d4bcfc15e10e81a4ba766d479ce8e27ed"
