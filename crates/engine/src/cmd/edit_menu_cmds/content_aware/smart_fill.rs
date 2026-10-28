@@ -96,10 +96,10 @@ pub(crate) fn validate(s: &Session, p: &Value) -> Result<()> {
     if let Some(reason) = crate::retouch_cmds::removal_context_reason(s, p) {
         return Err(bad(CMD, reason.replace("AI Remove", "AI Smart Fill")));
     }
-    if let Some(pin) = p.get("modelSha256") {
-        if pin.as_str() != Some(s.removal_service().model_sha256("lama").map_err(error)?.as_str()) {
-            return Err(bad(CMD, "the installed LaMa model differs from the captured modelSha256"));
-        }
+    if let Some(pin) = p.get("modelSha256")
+        && pin.as_str() != Some(s.removal_service().model_sha256("lama").map_err(error)?.as_str())
+    {
+        return Err(bad(CMD, "the installed LaMa model differs from the captured modelSha256"));
     }
     Ok(())
 }
@@ -231,10 +231,11 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
                     if let Some(target) = dest.get_mut(..3) {
                         target.copy_from_slice(color);
                     }
-                    if fmt.alpha && !keep_alpha {
-                        if let Some(a) = dest.get_mut(3) {
-                            *a = 1.;
-                        }
+                    if fmt.alpha
+                        && !keep_alpha
+                        && let Some(a) = dest.get_mut(3)
+                    {
+                        *a = 1.;
                     }
                 }
             }

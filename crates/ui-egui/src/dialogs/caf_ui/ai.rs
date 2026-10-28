@@ -193,6 +193,7 @@ fn start(app: &mut PhotocraftApp) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn drive(app: &mut PhotocraftApp, ctx: &egui::Context, dragging: bool) {
     reconcile(app);
     collect(app, false);
