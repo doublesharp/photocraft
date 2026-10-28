@@ -5905,7 +5905,7 @@ version = "0.17.0"
 
 [[package]]
 name = "photocraft-ml"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "cap-primitives",
  "cap-std",
