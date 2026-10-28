@@ -102,6 +102,48 @@ impl StoreDir {
     pub(super) fn open_regular(&self, name: &OsStr) -> Result<File> {
         open_regular(&self.dir, name)
     }
+
+    #[cfg(feature = "osor")]
+    pub(super) fn same_directory(&self, other: &Self) -> Result<bool> {
+        Ok(same_dir(&self.dir, &other.dir)?)
+    }
+
+    #[cfg(feature = "osor")]
+    pub(super) fn remove_regular(&self, name: &str) -> Result<()> {
+        let file = match self.open_regular(OsStr::new(name)) {
+            Ok(file) => file,
+            Err(Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        self.ensure_attached()?;
+        let quarantine = Quarantine::create(self)?;
+        quarantine.move_entry(name)?;
+        let valid = self
+            .ensure_attached()
+            .and_then(|_| quarantine.ensure_attached())
+            .and_then(|_| if quarantine.matches(&file)? { Ok(()) } else { Err(Error::Storage("managed OSOR file changed during removal".into())) });
+        if let Err(error) = valid.and_then(|_| quarantine.remove_entry()) {
+            return match quarantine.restore(name) {
+                Ok(()) => Err(error),
+                Err(_) => Err(quarantine.recovery_error(error)),
+            };
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "osor")]
+    pub(super) fn remove_empty_child(&self, name: &str, expected: &StoreDir) -> Result<()> {
+        self.ensure_attached()?;
+        expected.ensure_attached()?;
+        if !same_dir(&child_dir(&self.dir, OsStr::new(name))?, &expected.dir)? {
+            return Err(Error::Storage("managed OSOR directory was replaced during removal".into()));
+        }
+        match self.dir.remove_dir(name) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 fn open_regular(dir: &Dir, name: &OsStr) -> Result<File> {
@@ -124,6 +166,134 @@ fn random_name(prefix: &str, suffix: &str) -> Result<String> {
     }
     name.push_str(suffix);
     Ok(name)
+}
+
+/// A private, exclusively created bundle workspace. Every file is recorded by its
+/// open identity; cleanup never follows or removes an unrelated replacement.
+#[cfg(feature = "osor")]
+pub(super) struct StagedDirectory<'a> {
+    parent: &'a StoreDir,
+    pub(super) name: String,
+    pub(super) store: StoreDir,
+    owned: Vec<(String, File)>,
+    retained: bool,
+}
+
+#[cfg(feature = "osor")]
+impl<'a> StagedDirectory<'a> {
+    pub(super) fn create(parent: &'a StoreDir) -> Result<Self> {
+        parent.ensure_attached()?;
+        for _ in 0..16 {
+            let name = random_name("osor-sdxl-", "")?;
+            let builder = DirBuilder::new();
+            #[cfg(unix)]
+            let builder = {
+                use cap_std::fs::DirBuilderExt;
+                let mut builder = builder;
+                builder.mode(0o700);
+                builder
+            };
+            match parent.dir.create_dir_with(&name, &builder) {
+                Ok(()) => {
+                    let dir = child_dir(&parent.dir, OsStr::new(&name))?;
+                    let mut parents = parent.parents.iter().map(|(dir, name)| Ok((dir.try_clone()?, name.clone()))).collect::<io::Result<Vec<_>>>()?;
+                    parents.push((parent.dir.try_clone()?, name.clone().into()));
+                    let store = StoreDir { parents, dir };
+                    let stage = Self { parent, name, store, owned: Vec::new(), retained: false };
+                    stage.store.ensure_attached()?;
+                    return Ok(stage);
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(Error::Storage("cannot create a unique OSOR workspace".into()))
+    }
+
+    pub(super) fn create_file(&mut self, name: &str) -> Result<File> {
+        let mut components = Path::new(name).components();
+        if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() || self.owned.len() >= 12 {
+            return Err(Error::Storage("invalid OSOR workspace file name or count".into()));
+        }
+        self.store.ensure_attached()?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = self.store.dir.open_with(name, &options)?.into_std();
+        self.owned.push((name.into(), file.try_clone()?));
+        Ok(file)
+    }
+
+    pub(super) fn ensure_owned(&self) -> Result<()> {
+        self.store.ensure_attached()?;
+        for (name, expected) in &self.owned {
+            if !same_file(expected, &self.store.open_regular(OsStr::new(name))?)? {
+                return Err(Error::Storage("an OSOR workspace file was replaced".into()));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn sync(&self) -> Result<()> {
+        self.ensure_owned()?;
+        for (_, file) in &self.owned {
+            file.sync_all()?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn publish_manifest(&mut self, bytes: &[u8]) -> Result<()> {
+        use std::io::Write;
+        if bytes.len() > 1024 * 1024 || self.owned.len() >= 12 {
+            return Err(Error::Storage("OSOR manifest exceeds the managed publication bound".into()));
+        }
+        self.ensure_owned()?;
+        let mut partial = Partial::create(&self.store)?;
+        partial.file.write_all(bytes)?;
+        partial.file.sync_all()?;
+        partial.ensure_owned()?;
+        self.store.ensure_attached()?;
+        let held = partial.file.try_clone()?;
+        self.store.dir.hard_link(&partial.name, &self.store.dir, "manifest.json")?;
+        self.owned.push(("manifest.json".into(), held));
+        drop(partial);
+        self.ensure_owned()
+    }
+
+    pub(super) fn remove_file(&mut self, name: &str) -> Result<()> {
+        self.ensure_owned()?;
+        let index = self.owned.iter().position(|(owned, _)| owned == name).ok_or_else(|| Error::Storage("OSOR workspace does not own this file".into()))?;
+        self.store.dir.remove_file(name)?;
+        self.owned.swap_remove(index);
+        Ok(())
+    }
+
+    pub(super) fn retain(mut self) {
+        self.retained = true;
+    }
+}
+
+#[cfg(feature = "osor")]
+impl Drop for StagedDirectory<'_> {
+    fn drop(&mut self) {
+        if self.retained {
+            return;
+        }
+        let attached = child_dir(&self.parent.dir, OsStr::new(&self.name)).is_ok_and(|current| same_dir(&current, &self.store.dir).unwrap_or(false));
+        if !attached {
+            return;
+        }
+        for (name, expected) in &self.owned {
+            if self.store.open_regular(OsStr::new(name)).is_ok_and(|current| same_file(expected, &current).unwrap_or(false)) {
+                let _ = self.store.dir.remove_file(name);
+            }
+        }
+        let _ = self.parent.dir.remove_dir(&self.name);
+    }
 }
 
 /// An exclusively created leaf. Cleanup stays on the held store handle and checks ownership

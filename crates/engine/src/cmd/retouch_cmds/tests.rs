@@ -3414,10 +3414,357 @@ fn removal_preview_catalog_reports_per_model_runtime_and_osor_auto_stays_classic
     assert_eq!(lama["available"], true);
     assert_eq!(osor["available"], false, "another model adapter cannot make OSOR available");
     assert_eq!(osor["artifactKind"], "bundle");
-    assert_eq!(osor["canDownload"], false);
+    assert_eq!(osor["canDownload"], true);
+    assert_eq!(osor["artifacts"].as_array().unwrap().len(), 4);
+    assert!(osor["downloadBytes"].as_u64().unwrap() > 8_000_000_000);
+    assert!(osor["preparationMemoryMib"].as_u64().unwrap() >= 40960);
     let backend = enable_osor_preview(&mut s);
     let mut params = osor_params(false, false);
     params["method"] = json!("auto");
     assert_eq!(s.execute("paint.remove", params).unwrap()["effectiveMethod"], "classical");
     assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[derive(Default)]
+struct RegionalRemoval(std::sync::Mutex<Vec<(String, photocraft_ml::RemovalInput)>>);
+impl photocraft_ml::RemovalBackend for RegionalRemoval {
+    fn ready(&self, id: &str) -> bool {
+        matches!(id, "lama" | "osor-sdxl" | "migan-v1")
+    }
+    fn infer(
+        &self,
+        id: &str,
+        input: &photocraft_ml::RemovalInput,
+        _: &dyn photocraft_ml::RemovalControl,
+    ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+        self.0.lock().unwrap().push((id.into(), input.clone()));
+        Ok(photocraft_ml::RemovalOutput {
+            rgb: vec![if id == "osor-sdxl" { 0.8 } else { 0.9 }; input.rgb.len()],
+            edit_alpha: (id == "osor-sdxl").then(|| vec![0.25; input.mask.len()]),
+            inference_scale: 1.0,
+            load_ms: 0.0,
+            forward_ms: 0.0,
+        })
+    }
+}
+fn enable_regional_removal(s: &mut Session, workflow: &str) -> std::sync::Arc<RegionalRemoval> {
+    let backend = std::sync::Arc::new(RegionalRemoval::default());
+    s.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::default().with_backend(backend.clone())));
+    s.execute("remove.setup", json!({"workflow":workflow,"memoryUsageMb":65536})).unwrap();
+    backend
+}
+#[test]
+fn regional_remove_routes_independent_original_crops_and_applies_exact_preview_once() {
+    let _guard = lock_ai_tests();
+    let mut s = session(1024, 256, 8, "rgb");
+    paint_layer(&mut s, |_, _| [0.5, 0.5, 0.5, 1.0]);
+    let backend = enable_regional_removal(&mut s, "recommended");
+    let before = s.active().unwrap().doc.clone();
+    let history = s.active().unwrap().history.past_len();
+    let result = s
+        .execute(
+            "paint.remove",
+            json!({"method":"auto","size":8,"strokes":[
+        {"points":[[80,100],[160,100]],"repairType":"detail"},
+        {"points":[[850,100]],"repairType":"object"}]}),
+        )
+        .unwrap();
+    assert_eq!(result["effectiveMethod"], "hybrid");
+    assert_eq!(result["preview"], true);
+    let calls = backend.0.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!((&*calls[0].0, &*calls[1].0), ("lama", "osor-sdxl"));
+    assert!(calls.iter().all(|(_, input)| input.width < 400 && input.height < 256));
+    assert!(calls.iter().all(|(_, input)| input.rgb.iter().all(|v| (*v - 0.5).abs() < 0.01)), "both models must read the original snapshot");
+    drop(calls);
+    assert_eq!(s.active().unwrap().doc, before);
+    assert_eq!(s.active().unwrap().history.past_len(), history);
+    assert_eq!(result["regionalPlan"].as_array().unwrap().len(), 2);
+    let (candidate, id) = s.removal_preview_document().unwrap();
+    s.execute("remove.preview.apply", json!({"id":id})).unwrap();
+    assert_eq!(s.active().unwrap().doc, candidate);
+    assert_eq!(s.active().unwrap().history.past_len(), history + 1);
+    assert_eq!(s.journal.last().unwrap().1["regionalPlan"], result["regionalPlan"]);
+    assert!(s.undo());
+    assert_eq!(s.active().unwrap().doc, before);
+}
+#[test]
+fn regional_remove_overlap_core_priority_fractional_selection_and_single_new_layer() {
+    let _guard = lock_ai_tests();
+    for depth in [8, 16] {
+        for new_layer in [false, true] {
+            let mut s = square_session(depth, "rgb");
+            let backend = enable_regional_removal(&mut s, "recommended");
+            s.edit("selection", |doc, _| {
+                let mut sel = Surface::new(PixelFormat::GRAY8);
+                sel.write_region(Rect::new(46, 30, 47, 31), &[0.5]);
+                doc.selection = Some(sel);
+                Ok(())
+            })
+            .unwrap();
+            let before = s.active().unwrap().doc.clone();
+            let layers = before.layers.len();
+            let result = s
+                .execute(
+                    "paint.remove",
+                    json!({"method":"auto","size":10,"newLayer":new_layer,"strokes":[
+            {"points":[[46,30]],"repairType":"detail"},{"points":[[46,30]],"repairType":"object"}]}),
+                )
+                .unwrap();
+            let (candidate, _) = s.removal_preview_document().unwrap();
+            let id = result.get("layer").and_then(Value::as_u64).map(LayerId).or(s.active().unwrap().active_layer).unwrap();
+            let got = candidate.layer(id).unwrap().surface().unwrap().rgba(46, 30);
+            if new_layer {
+                assert!((got[0] - 0.8).abs() < 0.01);
+                assert!((got[3] - 128.0 / 255.0).abs() < 0.01);
+                assert_eq!(candidate.layers.len(), layers + 1);
+            } else {
+                let old = rgba(&s, 46, 30)[0];
+                assert!((got[0] - (old + (0.8 - old) * 128.0 / 255.0)).abs() < 0.01, "{got:?}");
+            }
+            let calls = backend.0.lock().unwrap();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0].1.rgb, calls[1].1.rgb, "both overlapping models must sample the original snapshot");
+            drop(calls);
+            assert_eq!(result["regionalPlan"].as_array().unwrap().len(), 1);
+            s.execute("remove.preview.apply", json!({})).unwrap();
+            assert!(s.undo());
+            assert_eq!(s.active().unwrap().doc, before);
+        }
+    }
+}
+#[test]
+fn regional_remove_profiles_route_without_osor_and_validate_hints_atomically() {
+    let _guard = lock_ai_tests();
+    for (workflow, model) in [("lama", "lama"), ("compact", "migan-v1")] {
+        let mut s = square_session(8, "rgb");
+        let backend = enable_regional_removal(&mut s, workflow);
+        let r = s.execute("paint.remove", json!({"method":"auto","points":[[46,30]],"size":10})).unwrap();
+        assert_eq!(r["modelId"], model);
+        assert_eq!(backend.0.lock().unwrap()[0].0, model);
+    }
+    let mut s = square_session(8, "rgb");
+    let backend = enable_regional_removal(&mut s, "recommended");
+    let before = s.active().unwrap().doc.clone();
+    assert!(s.execute("paint.remove", json!({"method":"auto","points":[[46,30]],"repairType":"unknown"})).is_err());
+    for malformed in [
+        json!([{"crop":[0,0,64,64],"components":[{"modelId":"lama","strokeIndices":[1024]}]}]),
+        json!([{"crop":[0,0,64,64],"components":[{"modelId":"lama","strokeIndices":[0],"unknown":true}]}]),
+    ] {
+        assert!(s.execute("paint.remove", json!({"method":"auto","points":[[46,30]],"size":4,"regionalPlan":malformed})).is_err());
+    }
+    assert!(backend.0.lock().unwrap().is_empty());
+    assert_eq!(s.active().unwrap().doc, before);
+}
+
+#[test]
+fn regional_remove_auto_geometry_hints_effect_priority_and_missing_models() {
+    let _guard = lock_ai_tests();
+    let mut s = session(512, 128, 8, "rgb");
+    paint_layer(&mut s, |_, _| [0.5, 0.5, 0.5, 1.0]);
+    let backend = enable_regional_removal(&mut s, "recommended");
+    let r = s.execute("paint.remove", json!({"method":"auto","size":4,"strokes":[[[40,64],[120,64]],[[400,64]]]})).unwrap();
+    let calls = backend.0.lock().unwrap();
+    assert_eq!(calls.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["lama", "osor-sdxl"]);
+    assert_eq!(r["regionalPlan"].as_array().unwrap().len(), 2);
+    drop(calls);
+    s.execute("remove.preview.discard", json!({})).unwrap();
+    backend.0.lock().unwrap().clear();
+    s.execute(
+        "paint.remove",
+        json!({"method":"auto","size":4,"repairType":"detail","strokes":[
+        {"points":[[40,64],[120,64]],"repairType":"object"},[[400,64]]]}),
+    )
+    .unwrap();
+    let calls = backend.0.lock().unwrap();
+    assert_eq!(calls[0].0, "lama");
+    assert!(calls[0].1.width < calls[1].1.width, "top hint applies to compact mark; explicit object overrides thin geometry");
+    drop(calls);
+    s.execute("remove.preview.discard", json!({})).unwrap();
+    s.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::default().with_backend(std::sync::Arc::new(SolidRemoval::default()))));
+    let before = s.active().unwrap().doc.clone();
+    let history = s.active().unwrap().history.past_len();
+    let error = s.execute("paint.remove", json!({"method":"auto","points":[[50,64]],"size":4})).unwrap_err().to_string();
+    assert!(error.contains("osor-sdxl"), "{error}");
+    assert_eq!(s.active().unwrap().doc, before);
+    assert_eq!(s.active().unwrap().history.past_len(), history);
+}
+
+#[test]
+fn regional_remove_cancel_stale_failure_and_discard_release_every_candidate() {
+    use std::time::{Duration, Instant};
+    let _guard = lock_ai_tests();
+    for scenario in 0..4 {
+        let mut s = square_session(8, "rgb");
+        enable_regional_removal(&mut s, "recommended");
+        let before = s.active().unwrap().doc.clone();
+        let history = s.active().unwrap().history.past_len();
+        let journal = s.journal.clone();
+        let job = match s.start("paint.remove", json!({"method":"auto","points":[[46,30]],"size":8})).unwrap() {
+            crate::jobs::Started::Job(id) => id,
+            _ => panic!("expected job"),
+        };
+        let until = Instant::now() + Duration::from_secs(10);
+        while !s.test_job_worker_finished(job) && Instant::now() < until {
+            std::thread::yield_now();
+        }
+        assert!(s.test_job_worker_finished(job));
+        match scenario {
+            0 => {
+                assert!(s.cancel_job(job));
+                assert!(s.wait_job(job).is_err());
+            }
+            1 => {
+                s.execute("remove.preview.discard", json!({})).unwrap();
+                assert!(s.wait_job(job).is_err());
+            }
+            2 => {
+                s.execute("prefs.set", json!({"path":"generativeRemove.workflow","value":"lama"})).unwrap();
+                assert!(s.wait_job(job).is_err());
+            }
+            _ => {
+                assert_eq!(s.wait_job(job).unwrap()["preview"], true);
+                s.execute("remove.preview.discard", json!({})).unwrap();
+            }
+        }
+        assert!(s.removal_preview_document().is_none());
+        assert_eq!(s.active().unwrap().doc, before);
+        assert_eq!(s.active().unwrap().history.past_len(), history);
+        assert_eq!(s.journal, journal);
+        assert!(s.removal_service().admit("lama", 0, u64::MAX).is_ok());
+    }
+}
+
+#[test]
+fn regional_remove_effect_context_never_overwrites_detail_core_or_protected_pixels() {
+    let _guard = lock_ai_tests();
+    for depth in [8, 16] {
+        for effects in [false, true] {
+            let mut s = session(128, 128, depth, "rgb");
+            paint_layer(&mut s, |_, _| [0.5, 0.5, 0.5, 1.0]);
+            enable_regional_removal(&mut s, "recommended");
+            s.execute(
+                "paint.remove",
+                json!({"method":"auto","size":4,"removeEffects":effects,"strokes":[
+            {"points":[[40,64]],"repairType":"detail"},{"points":[[70,64]],"repairType":"object"}]}),
+            )
+            .unwrap();
+            let (doc, _) = s.removal_preview_document().unwrap();
+            let surf = doc.layer(s.active().unwrap().active_layer.unwrap()).unwrap().surface().unwrap();
+            assert!((surf.rgba(40, 64)[0] - 0.9).abs() < 0.01, "detail core outranks OSOR effect context");
+            assert!((surf.rgba(70, 64)[0] - 0.8).abs() < 0.01, "OSOR core is already blended");
+            assert!((surf.rgba(55, 64)[0] - (if effects { 0.8 } else { 0.5 })).abs() < 0.01, "strict union by default; explicit effect context only");
+            s.execute("remove.preview.discard", json!({})).unwrap();
+        }
+    }
+}
+
+#[test]
+fn regional_remove_bounds_budget_failure_and_missing_models_never_download_or_apply_partially() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Downloads(AtomicUsize);
+    impl photocraft_ml::ModelDownloader for Downloads {
+        fn open(&self, _: &photocraft_ml::ModelSpec) -> photocraft_ml::Result<Box<dyn std::io::Read + Send>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(std::io::empty()))
+        }
+    }
+    struct FailObject;
+    impl photocraft_ml::RemovalBackend for FailObject {
+        fn ready(&self, _: &str) -> bool {
+            true
+        }
+        fn infer(
+            &self,
+            id: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            if id == "osor-sdxl" {
+                return Err(photocraft_ml::Error::InvalidInput("synthetic object failure".into()));
+            }
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], edit_alpha: None, inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+        }
+    }
+    let _guard = lock_ai_tests();
+    let mut s = session(512, 128, 8, "rgb");
+    paint_layer(&mut s, |_, _| [0.5, 0.5, 0.5, 1.0]);
+    let backend = enable_regional_removal(&mut s, "recommended");
+    let before = s.active().unwrap().doc.clone();
+    let strokes = (0..33).map(|i| json!([[16 + (i % 16) * 30, 16 + (i / 16) * 35]])).collect::<Vec<_>>();
+    assert!(s.execute("paint.remove", json!({"method":"auto","size":1,"strokes":strokes})).is_err());
+    assert!(backend.0.lock().unwrap().is_empty());
+    s.execute("prefs.set", json!({"path":"performance.memoryUsageMb","value":256})).unwrap();
+    assert!(s.execute("paint.remove", json!({"method":"auto","points":[[50,64]],"size":4})).unwrap_err().to_string().contains("budget"));
+    assert!(backend.0.lock().unwrap().is_empty());
+    s.execute("prefs.set", json!({"path":"performance.memoryUsageMb","value":65536})).unwrap();
+    let downloads = Arc::new(Downloads(AtomicUsize::new(0)));
+    s.set_removal_service(Arc::new(photocraft_ml::RemovalService::default().with_backend(Arc::new(FailObject)).with_downloader(downloads.clone())));
+    let history = s.active().unwrap().history.past_len();
+    assert!(
+        s.execute(
+            "paint.remove",
+            json!({"method":"auto","size":4,"strokes":[
+        {"points":[[40,64]],"repairType":"detail"},{"points":[[400,64]],"repairType":"object"}]})
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("synthetic object failure")
+    );
+    assert_eq!(s.active().unwrap().doc, before);
+    assert_eq!(s.active().unwrap().history.past_len(), history);
+    assert_eq!(downloads.0.load(Ordering::SeqCst), 0);
+    assert!(s.removal_service().admit("lama", 0, u64::MAX).is_ok());
+    s.set_removal_service(Arc::new(photocraft_ml::RemovalService::default().with_downloader(downloads.clone())));
+    assert!(s.execute("paint.remove", json!({"method":"auto","size":4,"points":[[40,64]]})).is_err());
+    assert_eq!(downloads.0.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn regional_remove_replay_rejects_a_changed_workflow_before_inference() {
+    let _guard = lock_ai_tests();
+    let mut s = session(512, 128, 8, "rgb");
+    paint_layer(&mut s, |_, _| [0.5, 0.5, 0.5, 1.0]);
+    let backend = enable_regional_removal(&mut s, "recommended");
+    let result = s
+        .execute(
+            "paint.remove",
+            json!({"method":"auto","size":4,"strokes":[
+        {"points":[[40,64]],"repairType":"detail"},{"points":[[400,64]],"repairType":"object"}]}),
+        )
+        .unwrap();
+    s.execute("remove.preview.apply", json!({"id":result["previewId"]})).unwrap();
+    let mut frozen = s.journal.last().unwrap().1.clone();
+    // The injected OSOR fixture has no installed bundle digest. Use a structurally valid digest
+    // so the replay reaches workflow resolution rather than failing digest syntax validation.
+    frozen["modelRevisions"]["osor-sdxl"] = json!("0".repeat(64));
+    assert!(frozen.get("regionalPlan").is_some());
+    assert!(frozen.get("modelRevisions").is_some());
+    assert!(s.undo());
+    backend.0.lock().unwrap().clear();
+    for workflow in ["lama", "compact", "classical", "custom"] {
+        s.execute("remove.setup", json!({"workflow":workflow})).unwrap();
+        let before = s.active().unwrap().doc.clone();
+        let history = s.active().unwrap().history.past_len();
+        let result = s.execute("paint.remove", frozen.clone());
+        assert!(result.is_err(), "hybrid replay must reject changed workflow {workflow}: {result:?}");
+        assert!(backend.0.lock().unwrap().is_empty());
+        assert!(s.removal_preview_document().is_none());
+        assert_eq!(s.active().unwrap().doc, before);
+        assert_eq!(s.active().unwrap().history.past_len(), history);
+    }
+    s.execute("remove.setup", json!({"workflow":"recommended"})).unwrap();
+    for method in [Some("ai"), Some("classical"), None] {
+        let mut params = frozen.clone();
+        if let Some(method) = method {
+            params["method"] = json!(method);
+        } else {
+            params.as_object_mut().unwrap().remove("method");
+        }
+        assert!(s.execute("paint.remove", params).is_err());
+        assert!(backend.0.lock().unwrap().is_empty());
+    }
 }

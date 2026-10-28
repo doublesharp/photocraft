@@ -217,6 +217,9 @@ pub(super) fn set_path(root: &mut Value, path: &str, value: Value) -> std::resul
 
 /// Validate one value for `path` before it is stored (choices, ranges, colours).
 pub(super) fn check_value(path: &str, v: &Value) -> std::result::Result<(), String> {
+    if path == "generativeRemove.workflow" && !v.as_str().is_some_and(|id| matches!(id, "recommended" | "lama" | "compact" | "classical" | "custom")) {
+        return Err("unknown Remove workflow".into());
+    }
     let known_model = |id: &str| photocraft_ml::RemovalService::default().catalog().iter().any(|model| model.id == id);
     if path == "generativeRemove.selectedModel" {
         let id = v.as_str().ok_or("`generativeRemove.selectedModel` must be a model id")?;

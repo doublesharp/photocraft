@@ -26,6 +26,7 @@ use crate::theme::{ThemeKind, Tokens};
 #[derive(Default)]
 pub struct Runtime {
     loaded: bool,
+    remove_setup: remove_setup::Runtime,
     /// Preferences revision last written to storage (or loaded from it).
     saved_rev: u64,
     /// This instance's preferences as of `saved_rev`: the base of the three-way merge on save.
@@ -66,7 +67,12 @@ mod dialogs;
 mod fields;
 mod graphics;
 mod models;
+mod remove_setup;
 pub use models::open as open_remove_models;
+pub(crate) use remove_setup::{
+    can_confirm as remove_setup_can_confirm, confirm_label as remove_setup_confirm_label, owns as owns_remove_setup, preflight as remove_setup_preflight,
+    tick as tick_remove_models,
+};
 mod save;
 mod shortcuts;
 mod startup;

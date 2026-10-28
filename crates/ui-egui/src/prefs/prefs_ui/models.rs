@@ -49,7 +49,7 @@ fn preference(app: &mut PhotocraftApp, path: &str, value: Value) -> Result<Value
 
 // Model transfers can take minutes. Start them as jobs even if a host normally runs other
 // commands inline; the browser has no model-management capability and never starts one.
-fn model_command(app: &mut PhotocraftApp, id: &str, params: Value) -> Result<Value, String> {
+pub(super) fn model_command(app: &mut PhotocraftApp, id: &str, params: Value) -> Result<Value, String> {
     let background = app.background_jobs;
     app.background_jobs = true;
     let result = app.run(id, params);
@@ -63,6 +63,7 @@ fn enabled_model(app: &mut PhotocraftApp, id: &str, enabled: bool) -> Result<Val
     if enabled {
         ids.push(id.to_string());
     }
+    app.run("remove.setup", json!({"workflow":"custom"}))?;
     preference(app, "generativeRemove.enabledModels", json!(ids))
 }
 
@@ -104,16 +105,27 @@ pub(super) fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
 fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, status: &Value) {
     let t = Tokens::get(ui.ctx());
     ui.label(tl!("Choose which local models may process your images. A brush stroke never downloads a model."));
+    ui.horizontal_wrapped(|ui| {
+        ui.label(format!("{}: {}", tl!("Remove setup"), app.session.prefs().generative_remove.workflow));
+        if ui.add_enabled(!super::remove_setup::busy(app), egui::Button::new(tl!("Choose model setup…"))).clicked() {
+            super::remove_setup::open(app);
+        }
+    });
+    if !app.prefs_rt.remove_setup.message.is_empty() {
+        let color = if app.prefs_rt.remove_setup.error { t.danger } else { t.text_dim };
+        ui.label(RichText::new(&app.prefs_rt.remove_setup.message).color(color));
+    }
     ui.add_space(6.0);
+    let setup_busy = super::remove_setup::busy(app);
     let available = flag(status, "runtimeAvailable");
     let management = flag(status, "managementAvailable");
     let prefs = app.session.prefs().generative_remove.clone();
     let mut enabled = prefs.enabled;
     let enabled_ids = prefs.enabled_models;
     let selected_id = prefs.selected_model;
-    ui.add_enabled_ui(available, |ui| {
+    ui.add_enabled_ui(available && !setup_busy, |ui| {
         if crate::widgets::checkbox(ui, &mut enabled, tl!("Enable local AI removal")).changed() {
-            let result = preference(app, "generativeRemove.enabled", json!(enabled));
+            let result = app.run("remove.setup", json!({"workflow":"custom"})).and_then(|_| preference(app, "generativeRemove.enabled", json!(enabled)));
             remember_result(f, result);
         }
     });
@@ -138,7 +150,12 @@ fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new(text(&model, "label")).strong());
                         let bytes = model.get("bytes").and_then(Value::as_u64).unwrap_or(0);
-                        let size = if id == "osor-sdxl" { tl!("Local bundle").to_string() } else { format!("{:.0} MB", bytes as f64 / 1_000_000.0) };
+                        let bytes = model.get("downloadBytes").and_then(Value::as_u64).unwrap_or(bytes);
+                        let size = if bytes >= 1_000_000_000 {
+                            format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+                        } else {
+                            format!("{:.0} MB", bytes as f64 / 1_000_000.0)
+                        };
                         ui.label(RichText::new(size).color(t.text_dim));
                         let readiness = if busy {
                             tl!("In use")
@@ -150,7 +167,7 @@ fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>
                         ui.label(RichText::new(readiness).color(t.text_dim));
                     });
                     ui.label(tl!(text(&model, "description")));
-                    ui.add_enabled_ui(available, |ui| {
+                    ui.add_enabled_ui(available && !setup_busy, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             if crate::widgets::checkbox(ui, &mut model_enabled, tl!("Enable this process")).changed() {
                                 let result = enabled_model(app, id, model_enabled);
@@ -158,7 +175,9 @@ fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>
                             }
                             ui.add_enabled_ui(model_enabled, |ui| {
                                 if ui.radio(selected_id == id, tl!("Selected model")).clicked() {
-                                    let result = preference(app, "generativeRemove.selectedModel", json!(id));
+                                    let result = app
+                                        .run("remove.setup", json!({"workflow":"custom"}))
+                                        .and_then(|_| preference(app, "generativeRemove.selectedModel", json!(id)));
                                     remember_result(f, result);
                                 }
                             });
@@ -184,11 +203,15 @@ fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>
                         }
                     });
                     // An uninstalled model is intentionally eligible for installation.
-                    ui.add_enabled_ui(available && management && !busy, |ui| {
+                    ui.add_enabled_ui(available && management && !busy && !setup_busy, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             if !installed && flag(&model, "canDownload") && ui.button(tl!("Download")).clicked() {
-                                let result = model_command(app, "ai.models.install", json!({"modelId": id}));
-                                remember_result(f, result);
+                                if id == "osor-sdxl" {
+                                    super::remove_setup::open_recommended(app);
+                                } else {
+                                    let result = model_command(app, "ai.models.install", json!({"modelId": id}));
+                                    remember_result(f, result);
+                                }
                             }
                             let install_label = if id == "osor-sdxl" { tl!("Install from folder…") } else { tl!("Install from file…") };
                             if ui.add_enabled(app.services.file_dialog.is_some(), egui::Button::new(install_label)).clicked() {
@@ -334,6 +357,25 @@ mod tests {
         h.run_steps(3);
         assert_eq!(h.state().app.session.prefs_value().pointer("/generativeRemove/selectedModel"), Some(&json!("migan-v1")));
         assert!(!h.state().app.session.has_jobs(), "selecting a model does not download it");
+    }
+
+    #[test]
+    fn hybrid_osor_download_reopens_full_setup_after_a_classical_choice() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut state = fixture();
+        state.app.run("remove.setup", json!({"workflow":"classical"})).unwrap();
+        state.status["models"][0]["id"] = json!("osor-sdxl");
+        let mut harness = Harness::builder()
+            .with_size(vec2(700.0, 650.0))
+            .build_ui_state(|ui, state: &mut ModelUi| render(&mut state.app, ui, &mut state.fields, &state.status), state);
+        harness.run_steps(3);
+        harness.get_by_label("Download").click();
+        harness.run_steps(3);
+        let app = &harness.state().app;
+        let setup = app.ui.dialogs.iter().find(|dialog| dialog.fields.get("__prefsui").and_then(Value::as_str) == Some("removeSetup")).unwrap();
+        assert_eq!(setup.fields["workflow"], "recommended");
+        assert_eq!(app.session.prefs().generative_remove.workflow, "classical", "opening a recommendation changes no preference");
+        assert!(!app.session.has_jobs());
     }
 
     #[test]

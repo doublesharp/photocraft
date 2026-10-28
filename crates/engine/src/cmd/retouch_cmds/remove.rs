@@ -24,6 +24,7 @@ use super::{
 use photocraft_doc::Layer;
 
 mod brush;
+mod hybrid;
 mod smart;
 mod work;
 
@@ -52,6 +53,7 @@ fn sampling_margin(area: Rect) -> i32 {
 
 /// What a removal does, checked before any work starts.
 struct Plan {
+    regions: Vec<hybrid::RegionPlan>,
     id: Option<LayerId>,
     /// One stroke (`points`), or several applied together (`strokes`).
     strokes: Vec<Stroke>,
@@ -122,7 +124,7 @@ fn parse_strokes(s: &Session, p: &Value) -> Result<(Vec<Stroke>, Option<LayerId>
         .as_object()
         .ok_or_else(|| bad(CMD, "params must be an object"))?
         .iter()
-        .filter(|(key, _)| !matches!(key.as_str(), "strokes" | "brush"))
+        .filter(|(key, _)| !matches!(key.as_str(), "strokes" | "brush" | "regionalPlan" | "modelRevisions"))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     for entry in list {
@@ -161,7 +163,8 @@ fn plan(s: &Session, p: &Value) -> Result<Plan> {
     let canvas = d.doc.bounds();
     let bounds = strokes.iter().map(stroke_bounds).reduce(|a, b| a.union(&b)).ok_or_else(|| bad(CMD, "`strokes` is empty"))?;
     let pixels = u64::from(bounds.width()) * u64::from(bounds.height());
-    if pixels > MAX_PIXELS {
+    let regional = p.get("method").and_then(Value::as_str) == Some("auto") && s.prefs().generative_remove.workflow == "recommended";
+    if !regional && pixels > MAX_PIXELS {
         return Err(bad(CMD, format!("the stroke is too large to remove ({pixels} pixels, at most {MAX_PIXELS})")));
     }
     let area = bounds.intersect(&canvas);
@@ -173,7 +176,8 @@ fn plan(s: &Session, p: &Value) -> Result<Plan> {
     let all_layers = flag(p, "sampleAllLayers", false) && targets_pixels(p);
     // A mask or channel has no "above": the fill goes where the stroke went.
     let new_layer = flag(p, "newLayer", false) && targets_pixels(p);
-    Ok(Plan { id, strokes, stroke_work_bytes, window, close_loops, all_layers, new_layer })
+    let regions = if regional { hybrid::regions(&strokes, p, canvas)? } else { Vec::new() };
+    Ok(Plan { id, strokes, stroke_work_bytes, window, close_loops, all_layers, new_layer, regions })
 }
 
 pub(super) fn check_stroke_work(brush: &BrushSettings, points: &[[f64; 3]]) -> Result<()> {
@@ -183,10 +187,13 @@ pub(super) fn check_stroke_work(brush: &BrushSettings, points: &[[f64; 3]]) -> R
 /// The hole over the plan's window: the strokes' footprints, their enclosed areas and a margin,
 /// limited to the selection. Empty when nothing would change.
 fn hole(plan: &Plan, sel: Option<&Surface>) -> Result<Vec<bool>> {
-    let win = plan.window;
+    hole_for(plan.strokes.iter(), plan.window, plan.close_loops, sel)
+}
+
+fn hole_for<'a>(strokes: impl Iterator<Item = &'a Stroke>, win: Rect, close_loops: bool, sel: Option<&Surface>) -> Result<Vec<bool>> {
     let (w, h) = (win.width() as usize, win.height() as usize);
     let mut m = vec![false; w * h];
-    for stroke in &plan.strokes {
+    for stroke in strokes {
         let (bounds, cov) = super::coverage(CMD, stroke)?;
         let bw = bounds.width() as usize;
         for (i, c) in cov.iter().enumerate() {
@@ -199,7 +206,7 @@ fn hole(plan: &Plan, sel: Option<&Surface>) -> Result<Vec<bool>> {
             }
         }
     }
-    if plan.close_loops {
+    if close_loops {
         m = photocraft_algo::remove::close_loops(w, h, &m);
     }
     m = photocraft_algo::remove::dilate(w, h, &m, GROW);
@@ -274,6 +281,11 @@ fn fill_to_new_layer(doc: &mut Document, id: Option<LayerId>, out: &Region, hole
 
 pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     let method = smart::decide(s, p)?;
+    let mut params = p.clone();
+    if matches!(method, smart::Method::Hybrid) {
+        params["preview"] = json!(true);
+    }
+    let p = &params;
     let plan = plan(s, p)?;
     // Keep the exact rendered brushes for the journal/action step, independent of later tool state.
     let resolved_brushes = if p.get("method").is_some() { Some(brush::snapshots(&plan.strokes)?) } else { None };
@@ -326,7 +338,7 @@ pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
                     }
                     if let Some(capture) = preview_capture {
                         let mut candidate_doc = (*preview_source).clone();
-                        let (damage, layer) = smart::apply(&mut candidate_doc, id, &p, content.rect, &content.rgb, &content.coverage, new_layer)?;
+                        let (damage, layer) = smart::apply_content(&mut candidate_doc, id, &p, &content, new_layer)?;
                         let mut result = json!({"damage":damage_json(damage)});
                         if let Some(id) = layer {
                             result["layer"] = json!(id.0);
@@ -353,7 +365,7 @@ pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
                         );
                     }
                     let (damage, layer) = s.edit(label, |doc, active| {
-                        let result = smart::apply(doc, id, &p, content.rect, &content.rgb, &content.coverage, new_layer)?;
+                        let result = smart::apply_content(doc, id, &p, &content, new_layer)?;
                         if let Some(id) = result.1 {
                             *active = Some(id);
                         }
@@ -393,7 +405,7 @@ pub(super) fn validate_options(s: &Session, p: &Value) -> Result<()> {
     if s.active().is_some_and(|st| crate::float_cmds::floating(st).is_some()) && matches!(p.get("method").and_then(Value::as_str), Some("ai" | "auto")) {
         let routed = crate::channel_cmds::inject_target(s, CMD, p.clone());
         let method = smart::decide(s, &routed)?;
-        if matches!(&method, smart::Method::Ai { .. }) {
+        if matches!(&method, smart::Method::Ai { .. } | smart::Method::Hybrid) {
             let plan = plan(s, &routed)?;
             let budget_bytes = u64::from(s.prefs().performance.memory_usage_mb).saturating_mul(1024 * 1024);
             smart::admission(&plan, &method, &s.removal_service(), budget_bytes)?;

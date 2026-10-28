@@ -20,8 +20,10 @@ pub use osor_rs::Backend as OsorBackend;
 #[cfg(not(target_arch = "wasm32"))]
 mod store;
 
-pub use catalog::{ModelSpec, ModelStatus};
+pub use catalog::{ModelArtifact, ModelSpec, ModelStatus, OSOR_PREPARATION_BYTES, model_artifact};
 pub const MAX_INPUT_PIXELS: u64 = 16_777_216;
+/// Weight license shipped with explicitly downloaded OSOR data, separate from the code license.
+pub const OSOR_LICENSE_TEXT: &str = include_str!("../licenses/LICENSE-osor-sdxl.txt");
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -81,6 +83,9 @@ impl RemovalControl for NoopControl {
 /// User-Agent. The store independently verifies all bytes before publishing them.
 pub trait ModelDownloader: Send + Sync {
     fn open(&self, model: &ModelSpec) -> Result<Box<dyn Read + Send>>;
+    fn open_artifact(&self, _artifact: &ModelArtifact) -> Result<Box<dyn Read + Send>> {
+        Err(Error::Download("multi-file model downloading is unavailable in this application".into()))
+    }
 }
 
 /// A context crop, in encoded sRGB, with white (positive) mask coverage denoting the hole.
@@ -122,6 +127,56 @@ pub struct RemovalPermit<'a> {
     _lease: store::Lease,
 }
 
+/// One frozen resource admission for at most 32 sequential regional forwards.
+/// The caller budgets retained region outputs in `transient_bytes`.
+pub struct RemovalBatchPermit<'a> {
+    service: &'a RemovalService,
+    models: Vec<&'static ModelSpec>,
+    transient_bytes: u64,
+    calls: u32,
+    failed: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    _lease: store::Lease,
+}
+
+impl RemovalBatchPermit<'_> {
+    pub fn into_reservation(self) -> RemovalReservation {
+        RemovalReservation {
+            #[cfg(not(target_arch = "wasm32"))]
+            _lease: self._lease,
+        }
+    }
+
+    pub fn model_sha256(&self, model_id: &str) -> Result<String> {
+        self.model(model_id)?;
+        self.service.model_sha256(model_id)
+    }
+
+    fn model(&self, model_id: &str) -> Result<&'static ModelSpec> {
+        self.models
+            .iter()
+            .copied()
+            .find(|model| model.id == model_id)
+            .ok_or_else(|| Error::InvalidInput("model was not included in the batch admission".into()))
+    }
+
+    pub fn infer(&mut self, model_id: &str, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
+        let model = self.model(model_id)?;
+        if self.failed || self.calls >= 32 {
+            return Err(Error::InvalidInput("removal batch has failed or reached its 32-forward limit".into()));
+        }
+        input.validate()?;
+        if input.minimum_buffer_bytes_for(model_id)? > self.transient_bytes {
+            return Err(Error::InvalidInput("removal input and output exceed the admitted transient buffer bound".into()));
+        }
+        check(ctl)?;
+        self.calls += 1;
+        let result = self.service.infer_admitted(model, input, ctl);
+        self.failed = result.is_err();
+        result
+    }
+}
+
 /// Owns the process-wide reservation while admitted output remains live.
 /// Dropping the value releases admission, including when a result is discarded.
 pub struct RemovalReservation {
@@ -150,21 +205,29 @@ impl RemovalPermit<'_> {
             return Err(Error::InvalidInput("a removal permit can run only one inference".into()));
         }
         self.used = true;
+        self.service.infer_admitted(self.model, input, ctl)
+    }
+}
+
+impl RemovalService {
+    fn infer_admitted(&self, model: &'static ModelSpec, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(backend) = &self.service.backend {
-            return self.service.native.infer_backend(backend.as_ref(), self.model.id, input, ctl);
+        self.native.prepare_model(model.id, self.backend.is_some());
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(backend) = &self.backend {
+            return self.native.infer_backend(backend.as_ref(), model.id, input, ctl);
         }
         #[cfg(all(not(target_arch = "wasm32"), feature = "osor"))]
-        if self.model.id == "osor-sdxl" {
-            return self.service.native.infer_osor(input, ctl);
+        if model.id == "osor-sdxl" {
+            return self.native.infer_osor(input, ctl);
         }
         #[cfg(all(not(target_arch = "wasm32"), feature = "native-inference"))]
         {
-            self.service.native.infer(self.model, input, ctl)
+            self.native.infer(model, input, ctl)
         }
         #[cfg(not(all(not(target_arch = "wasm32"), feature = "native-inference")))]
         {
-            let _ = (&self.service, self.model);
+            let _ = (model, input, ctl);
             Err(Error::Unavailable)
         }
     }
@@ -177,6 +240,38 @@ impl Default for RemovalService {
 }
 
 impl RemovalService {
+    pub fn admit_models(&self, model_ids: &[&str], transient_bytes: u64, budget_bytes: u64) -> Result<RemovalBatchPermit<'_>> {
+        if model_ids.is_empty() || model_ids.len() > 32 {
+            return Err(Error::InvalidInput("removal batch must admit between 1 and 32 model identifiers".into()));
+        }
+        let mut models = Vec::new();
+        let mut working = 0u64;
+        for id in model_ids {
+            let model = catalog::find(id)?;
+            working = working.max(u64::from(model.memory_mib) * 1024 * 1024);
+            if !self.model_runtime_available(model.id) {
+                return Err(Error::Unavailable);
+            }
+            if !models.iter().any(|admitted: &&ModelSpec| admitted.id == model.id) {
+                models.push(model);
+            }
+        }
+        let required = working.checked_add(transient_bytes).ok_or_else(|| Error::InvalidInput("removal memory estimate overflow".into()))?;
+        if required > budget_bytes {
+            return Err(Error::InvalidInput(format!("local removal needs an estimated {required} bytes, exceeding the {budget_bytes}-byte budget")));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let lease = self.native.begin()?;
+            if let Some(model) = models.first() {
+                self.native.prepare_model(model.id, self.backend.is_some());
+            }
+            Ok(RemovalBatchPermit { service: self, models, transient_bytes, calls: 0, failed: false, _lease: lease })
+        }
+        #[cfg(target_arch = "wasm32")]
+        Err(Error::Unavailable)
+    }
+
     /// Admit model memory plus caller-owned transient buffers against a frozen byte budget.
     pub fn admit(&self, model_id: &str, transient_bytes: u64, budget_bytes: u64) -> Result<RemovalPermit<'_>> {
         let model = catalog::find(model_id)?;
@@ -349,15 +444,28 @@ impl RemovalService {
     }
 
     pub fn install(&self, model_id: &str, ctl: &dyn RemovalControl) -> Result<()> {
+        self.install_with_memory_budget(model_id, 0, ctl)
+    }
+
+    /// Explicit preparation with a host-frozen memory budget. This never runs from inference.
+    /// OSOR conversion requires a 40 GiB admission estimate; ONNX installs stream to disk.
+    pub fn install_with_memory_budget(&self, model_id: &str, budget_bytes: u64, ctl: &dyn RemovalControl) -> Result<()> {
         let model = catalog::find(model_id)?;
         check(ctl)?;
+        let required = u64::from(model.preparation_memory_mib) * 1024 * 1024;
+        if budget_bytes < required {
+            return Err(Error::InvalidInput(format!(
+                "{} preparation needs an estimated {required} bytes, exceeding the {budget_bytes}-byte memory budget",
+                model.label
+            )));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.native.install(model, ctl)
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = model;
+            let _ = (model, budget_bytes);
             Err(Error::Unavailable)
         }
     }

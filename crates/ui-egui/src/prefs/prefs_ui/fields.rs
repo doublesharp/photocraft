@@ -18,6 +18,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
             prefs_body(ui, f, system);
         }
         "removeModels" => super::models::body(app, ui, f),
+        "removeSetup" => super::remove_setup::body(app, ui, f),
         "shortcuts" => shortcuts_body(app, ui, f),
         "presets" => presets_body(app, ui, f),
         "presetsIO" => presets_io_body(ui, f),

@@ -129,7 +129,7 @@ pub(super) fn settings_height(available: f32, item_spacing: f32, button_height: 
 pub fn width(fields: &Map<String, Value>, available: f32) -> Option<f32> {
     match fields.get("__prefsui").and_then(Value::as_str)? {
         "prefs" => Some(available.max(380.0)),
-        "removeModels" => Some(620.0_f32.min(available.max(380.0))),
+        "removeModels" | "removeSetup" => Some(620.0_f32.min(available.max(380.0))),
         "shortcuts" => Some(720.0),
         _ => Some(460.0),
     }
@@ -324,6 +324,7 @@ pub(super) fn mismatch_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
     match f.get("__prefsui").and_then(Value::as_str).unwrap_or("") {
         "removeModels" => Ok(json!({"closed": true})),
+        "removeSetup" => super::remove_setup::confirm(app, f),
         "prefs" => {
             let values = f.get("values").cloned().unwrap_or(Value::Null);
             app.run("prefs.set", json!({"path": "", "value": values}))

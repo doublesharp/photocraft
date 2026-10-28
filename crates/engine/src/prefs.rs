@@ -1087,6 +1087,9 @@ impl LayerMaskOverlay {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GenerativeRemove {
+    /// Migrated preferences retain their custom model and opt-in choice.
+    pub workflow: String,
+    pub setup_complete: bool,
     pub enabled: bool,
     pub enabled_models: Vec<String>,
     pub selected_model: String,
@@ -1094,7 +1097,7 @@ pub struct GenerativeRemove {
 
 impl Default for GenerativeRemove {
     fn default() -> Self {
-        Self { enabled: false, enabled_models: vec!["lama".into()], selected_model: "lama".into() }
+        Self { workflow: "custom".into(), setup_complete: false, enabled: false, enabled_models: vec!["lama".into()], selected_model: "lama".into() }
     }
 }
 

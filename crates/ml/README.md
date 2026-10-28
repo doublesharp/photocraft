@@ -16,6 +16,62 @@ Hold the returned permit across selection/hole/region and crop construction, inf
 
 `RemovalService::infer` remains available for callers that have already constructed an input and delegates with an unbounded budget; it releases its permit before returning, so callers retaining output under admission must use the permit and reservation API. Account for all live buffers and the returned output in `transient_bytes`; inference rejects a bound smaller than the actual f32 input RGB, mask and output RGB (28 bytes per pixel for ONNX; 32 including learned alpha for OSOR). WebAssembly admission and inference report `Error::Unavailable`.
 
+`admit_models(&[model_ids], transient_bytes, budget_bytes)` returns a
+`RemovalBatchPermit` for at most 32 sequential forwards. It admits the largest
+model working set plus the caller's complete retained-buffer estimate. Each
+`permit.infer(model_id, input, control)` checks membership and evicts the previous
+model family before loading another. A failed forward ends the batch; the lease
+still remains held. Capture replay identity with `permit.model_sha256(model_id)`
+and transfer ownership with `permit.into_reservation()` through preview apply or
+discard. Retained buffers must be dropped before that reservation.
+
+## Explicit OSOR preparation
+
+The compiled OSOR recipe downloads four digest-pinned safetensors files totaling
+8,415,101,006 bytes. `ModelSpec.artifacts` and `model_artifact(id)` expose their
+immutable source URLs, sizes, digests and license links. The application must
+provide `ModelDownloader::open_artifact`; its existing single-file `open` method
+continues to serve ONNX models. Model metadata separately discloses estimated
+installed bytes, preparation workspace and preparation memory.
+
+The explicit model-management command calls
+`install_with_memory_budget("osor-sdxl", frozen_budget_bytes, control)`.
+Preparation requires an estimated 40 GiB of memory and 19.1 GB of temporary disk
+space, including the roughly 10.61 GB installed bundle. The unbudgeted `install`
+method rejects OSOR before network or storage access. Inference never downloads.
+The service retains its global lease through all transfer, conversion and cleanup
+work, and evicts warm inference models before preparation.
+
+Inputs and output files are exclusively created through held directory
+capabilities. Every input stream and the staged file are checked against compiled
+lengths and SHA-256 values. Pure Rust conversion consumes held files and an
+output sink, never Python, pickle or an ambient output path. Its manifest is
+complete before a managed reference receipt is published without clobbering an
+existing installation. Publication also checks the held directory identity and
+the manifest returned by the completed conversion. The converter's 24 GiB decoded
+input cap is separate from the 12 GiB resident-bundle cap and the 40 GiB
+preparation estimate. Cancellation is cooperative between conversion stages;
+a synchronous stage keeps admission until it returns. Failed preparation cleans
+its owned files while preserving an existing valid receipt. Successful
+preparation removes raw inputs and keeps a copy of the model license. Removing a
+downloaded model removes its fixed owned bundle files and receipt; imported
+external bundles retain their original weights.
+
+The mirror's fixed prompt is F32 and differs numerically from the earlier local
+F16-export qualification. The actual managed bundle was independently compared
+on one 704×368 photo against a fresh upstream PyTorch/MPS reference using the
+previously qualified Metal inference graph: all 18 stages passed the unchanged
+frozen numerical limits. Decoded RGB maximum absolute error was 0.00092411 and
+RMS error was 0.000008951. This qualifies that bounded numerical scene; broader
+visual removal quality and application journeys require separate evidence.
+The ignored
+`real_osor_installer_converts_pinned_local_streams_into_managed_bundle` test
+requires explicit `PHOTOCRAFT_ML_OSOR_INSTALL_ROOT`,
+`PHOTOCRAFT_ML_OSOR_INSTALL_CACHE` and `PHOTOCRAFT_ML_OSOR_INSTALL_PROMPT` paths.
+It exercises actual conversion from pinned local streams and preserves its managed
+bundle for subsequent qualification. It does not test application HTTPS transport
+or infer image-quality acceptance.
+
 ## Optional real-model check
 
 The ignored `real_models_match_reference_and_reuse_one_warm_family` test requires `PHOTOCRAFT_ML_LAMA`, `PHOTOCRAFT_ML_MIGAN` and `PHOTOCRAFT_ML_ORACLE_DIR`. The oracle directory supplies a 512×512 interleaved RGB byte image (`image.rgb`), a 512×512 binary white-is-hole mask (`mask.bin`), and interleaved RGB byte outputs from an independent reference (`lama.rgb`, `migan.rgb`). Both artifacts are imported and verified by their catalog hashes. The test compares decoded samples within one byte value and checks cold/warm loads. Fixtures and test adapters do not qualify a model or platform; these comparisons cover only the supplied scene.
@@ -23,20 +79,24 @@ The ignored `real_models_match_reference_and_reuse_one_warm_family` test require
 ## OSOR-SDXL Phase II bridge
 
 The `osor-sdxl` catalog entry is always discoverable. Native `osor` enables the
-local `osor-rs` adapter; `osor-metal` also
-compiles its optional Metal backend. The default backend is CPU/F32. Applications
+`osor-rs` adapter and automatically compiles its Metal backend on macOS; other
+native platforms compile the CPU backend. `osor-metal` remains a compatibility
+feature alias. Desktop and CLI default features include `local-ai` and `osor`.
+The library is pinned to [osor-rs revision f9d4b2f9a2095a6befeb983240c58ccb19a29c9b](https://github.com/doublesharp/osor-rs/tree/f9d4b2f9a2095a6befeb983240c58ccb19a29c9b);
+updating it requires renewing the affected loading, conversion and inference checks.
+The desktop application's native setup selects Metal on macOS and CPU elsewhere;
+the bare library service defaults to CPU/F32. Applications
 can explicitly construct `RemovalService::new(directory).with_osor_backend(OsorBackend::Metal { ordinal: 0 })`;
 ML and engine code never read an environment variable to choose a backend. Unsupported
 backend selections report unavailable. `model_runtime_available(id)` reports support
-for each model independently; installing ONNX support does not enable OSOR.
+for each model independently; ONNX support alone does not enable OSOR.
 
 `service.import("osor-sdxl", bundle_directory, control)` accepts an explicitly
 selected, offline-converted Phase II bundle containing `manifest.json`,
 `unet.safetensors`, `vae.safetensors` and `prompt.safetensors`. Import validates the
 library manifest contract and hashes every capability-opened regular file, then
 publishes only `osor-sdxl-reference.json` in the managed model directory. It never
-copies or redistributes the multi-GB weights, and `install` rejects network downloads
-for OSOR. The source directory and all of its parents must remain at the imported
+copies the multi-GB weights. The source directory and all of its parents must remain at the imported
 path without symlinks. Removing the model removes its managed reference and warm
 cache, leaving the source weights intact. A different reference requires removing
 the current reference first. Bundle files are bounded to 16 GiB in total. The exact tensor headers fed into the
@@ -78,9 +138,9 @@ returns the imported raw manifest digest for replay identity; callers must captu
 revalidate it while holding the removal permit.
 
 The [OSOR model card](https://huggingface.co/QinmingZhou/OSOR) identifies the SDXL
-weights as CreativeML Open RAIL++-M with use restrictions. This bridge provides local
-import only; it does not grant redistribution rights or bundle weights. Code and
-weight licenses remain separate.
+weights as CreativeML Open RAIL++-M with use restrictions. Explicit preparation
+uses the pinned safetensors mirror and includes its license text; weights are
+never embedded in the application. Code and weight licenses remain separate.
 
 The ignored `real_osor_service_smoke_restores_rgb_alpha_and_reuses_warm_family`
 test requires macOS, `--features osor-metal`, and an explicit local

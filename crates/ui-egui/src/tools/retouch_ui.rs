@@ -229,12 +229,15 @@ pub(crate) fn report_remove_result(app: &mut PhotocraftApp, result: &Value) -> b
     let Some(method) = result.get("effectiveMethod").and_then(Value::as_str) else { return false };
     let label = match method {
         "ai" => tl!("AI"),
+        "hybrid" => tl!("LaMa + OSOR"),
         "classical" => tl!("Classical"),
         _ => return false,
     };
     let model = result.get("modelId").and_then(Value::as_str);
     let fallback = result.get("fallbackReason").and_then(Value::as_str);
-    app.remove_last_result = Some(json!({"effectiveMethod": method, "modelId": model, "fallbackReason": fallback}));
+    app.remove_last_result = Some(
+        json!({"effectiveMethod": method, "modelId": model, "fallbackReason": fallback, "regionalPlan":result.get("regionalPlan"), "modelRevisions":result.get("modelRevisions")}),
+    );
     app.ui.status = if result.get("previewId").and_then(Value::as_u64).is_some() {
         tl!("Preview ready. Apply or Cancel.").to_string()
     } else if let Some(reason) = fallback {
@@ -250,7 +253,8 @@ pub(crate) fn report_remove_result(app: &mut PhotocraftApp, result: &Value) -> b
 
 /// `paint.remove` params from the options bar (without the strokes).
 fn remove_params(o: &crate::state::ToolOptions) -> Value {
-    let mut params = json!({"sampleAllLayers": o.sample_all.remove, "newLayer": o.remove_new_layer, "method": o.remove_method});
+    let mut params =
+        json!({"sampleAllLayers": o.sample_all.remove, "newLayer": o.remove_new_layer, "method": o.remove_method, "repairType":o.remove_repair_type});
     if o.remove_effects {
         params["removeEffects"] = json!(true);
         params["preview"] = json!(true);
@@ -260,7 +264,9 @@ fn remove_params(o: &crate::state::ToolOptions) -> Value {
 
 fn removal_request(app: &PhotocraftApp, options: &crate::state::ToolOptions) -> Value {
     let mut params = remove_params(options);
-    if options.remove_method == "ai" && app.session.prefs().generative_remove.selected_model == "osor-sdxl" {
+    if (options.remove_method == "ai" && app.session.prefs().generative_remove.selected_model == "osor-sdxl")
+        || (options.remove_method == "auto" && app.session.prefs().generative_remove.workflow == "recommended")
+    {
         params["preview"] = json!(true);
     }
     params
@@ -325,6 +331,16 @@ pub(crate) fn remove_target(app: &PhotocraftApp) -> Option<RemoveTarget> {
     })
 }
 
+// Routing hints belong to each queued stroke. Other processing settings still invalidate
+// the batch; the gesture snapshot above also freezes its hint until pointer-up.
+fn remove_batch_target(app: &PhotocraftApp) -> Option<RemoveTarget> {
+    let mut target = remove_target(app)?;
+    if let Some(options) = target.options.as_object_mut() {
+        options.remove("repairType");
+    }
+    Some(target)
+}
+
 /// Remove after each stroke off: a finished stroke waits with the others, tinted on the canvas,
 /// until ↩ or the options bar's ✓ applies them all as one removal (Esc or ⊘ drops them).
 pub fn remove_pending_add(app: &mut PhotocraftApp, points: &[[f64; 3]]) {
@@ -336,7 +352,7 @@ fn remove_pending_add_with_brush(app: &mut PhotocraftApp, points: &[[f64; 3]], b
     if app.session.active_job().is_some() {
         return;
     }
-    let Some(target) = remove_target(app) else { return };
+    let Some(target) = remove_batch_target(app) else { return };
     let Some(st) = app.session.active() else { return };
     let size = [st.doc.size.width, st.doc.size.height];
     if let Err(error) = photocraft_engine::retouch_cmds::check_remove_stroke(b, points) {
@@ -351,7 +367,7 @@ fn remove_pending_add_with_brush(app: &mut PhotocraftApp, points: &[[f64; 3]], b
     }
     // The brush it was drawn with goes with it: the tint shows it, the removal uses it, however
     // the brush changes before ↩.
-    let mut entry = json!({"points": points, "size": b.size, "hardness": b.hardness * 100.0, "spacing": b.spacing * 100.0});
+    let mut entry = json!({"points": points, "size": b.size, "hardness": b.hardness * 100.0, "spacing": b.spacing * 100.0, "repairType":app.ui.tool_options.remove_repair_type});
     let brush = photocraft_engine::retouch_cmds::stroke_brush(b, &entry);
     match photocraft_engine::retouch_cmds::remove_brush_snapshot(&brush) {
         Ok(snapshot) => entry["brush"] = snapshot,
@@ -414,7 +430,7 @@ pub fn remove_pending_live(app: &mut PhotocraftApp) -> bool {
     if app.remove_pending.is_empty() {
         return false;
     }
-    if app.ui.tool == Tool::Remove && remove_target(app).as_ref() == app.remove_pending_target.as_ref() {
+    if app.ui.tool == Tool::Remove && remove_batch_target(app).as_ref() == app.remove_pending_target.as_ref() {
         return true;
     }
     remove_pending_cancel(app);
@@ -671,7 +687,12 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::checkbox(ui, &mut o.sample_all.remove, tl!("Sample All Layers"));
             crate::widgets::checkbox(ui, &mut o.remove_new_layer, tl!("Create a new layer"));
             crate::widgets::checkbox(ui, &mut o.remove_after_each_stroke, tl!("Remove after each stroke"));
-            let osor = app.session.prefs().generative_remove.selected_model == "osor-sdxl" && o.remove_method == "ai";
+            let recommended = app.session.prefs().generative_remove.workflow == "recommended" && o.remove_method == "auto";
+            if recommended {
+                let hints = [("auto".into(), tl!("Auto")), ("detail".into(), tl!("Small marks")), ("object".into(), tl!("Object"))];
+                crate::widgets::dropdown(ui, "remove-repair-type", tl!("Repair type"), &mut o.remove_repair_type, &hints, 110.0);
+            }
+            let osor = recommended || (app.session.prefs().generative_remove.selected_model == "osor-sdxl" && o.remove_method == "ai");
             if osor {
                 crate::widgets::checkbox(ui, &mut o.remove_effects, tl!("Shadows and reflections"));
             } else {

@@ -265,6 +265,7 @@ struct ToolSet {
     shape_stroke: Option<Option<photocraft_doc::ShapeStroke>>,
     tool: Option<Tool>,
     remove_method: Option<String>,
+    remove_repair_type: Option<String>,
     remove_sample_all: Option<bool>,
     remove_new_layer: Option<bool>,
     remove_after_each: Option<bool>,
@@ -292,6 +293,16 @@ impl ToolSet {
                         .filter(|v| matches!(*v, "classical" | "auto" | "ai"))
                         .map(str::to_owned)
                         .ok_or_else(|| "removeMethod must be classical, auto, or ai".to_string())
+                })
+                .transpose()?,
+            remove_repair_type: p
+                .get("removeRepairType")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|value| matches!(*value, "auto" | "detail" | "object"))
+                        .map(str::to_owned)
+                        .ok_or_else(|| "removeRepairType must be auto, detail, or object".to_string())
                 })
                 .transpose()?,
             remove_sample_all: bool_field(p, "removeSampleAllLayers")?,
@@ -352,6 +363,9 @@ impl ToolSet {
     fn apply_remove(&self, app: &mut PhotocraftApp) {
         if let Some(method) = &self.remove_method {
             app.ui.tool_options.remove_method = method.clone();
+        }
+        if let Some(repair_type) = &self.remove_repair_type {
+            app.ui.tool_options.remove_repair_type = repair_type.clone();
         }
         if let Some(sample) = self.remove_sample_all {
             app.ui.tool_options.sample_all.remove = sample;

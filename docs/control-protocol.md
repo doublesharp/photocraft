@@ -9,13 +9,15 @@ not an uncommitted document preview. Escape/outside clicks close it without reve
 See [Shape stroke options](shape-strokes.md) for limits, preview and persistence behavior.
 
 Remove options are available through `ui.set`: `removeMethod` (`classical|auto|ai`),
-`removeSampleAllLayers`, `removeNewLayer`, `removeAfterEachStroke`, and `removeEffects`
-(booleans). `removeEffects` is **Shadows and reflections**, supported by OSOR-SDXL Phase II
+`removeRepairType` (`auto|detail|object`), and `removeSampleAllLayers`, `removeNewLayer`,
+`removeAfterEachStroke`, and `removeEffects` (booleans). `removeEffects` is **Shadows and reflections**, supported by OSOR-SDXL Phase II
 only; it extends edits into the bounded context crop within the selection.
 These settings do not install models or enable local AI processing; use the explicit preferences
 and model commands described in [Local AI Remove](generative-remove.md).
 
-The Remove UI requests a preview for OSOR before committing. `ui.inspect.remove.preview` exposes
+The Remove UI requests a preview for OSOR and Recommended Auto before committing.
+`ui.inspect.remove` also reports `workflow`, `setupComplete` and the current `repairType`.
+Each queued stroke retains its repair type; changing hints can build a mixed regional batch. `ui.inspect.remove.preview` exposes
 its readiness and candidate ID; the canvas shows that exact candidate. Engine clients request
 the same lifecycle with `paint.remove {method:"ai", modelId:"osor-sdxl", preview:true, …}`.
 `removeEffects:true` requires `preview:true` and OSOR; other learned models remain hole-only.

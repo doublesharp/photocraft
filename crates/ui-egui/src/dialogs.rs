@@ -433,7 +433,8 @@ fn button_row(
     } else {
         let ok_label = ok_label(d);
         // Dialogs that need an input first (a preset name, a selection) grey OK out.
-        let can_ok = crate::crop_presets::can_confirm(app, fields) && crate::stack_dialog::can_confirm(fields);
+        let can_ok =
+            crate::crop_presets::can_confirm(app, fields) && crate::stack_dialog::can_confirm(fields) && crate::prefs_ui::remove_setup_can_confirm(app, fields);
         let ok = DialogButton::new(ButtonRole::Default, ok_label, 84.0).enabled(can_ok);
         // Photoshop: holding Alt turns Cancel into Reset (the dialog stays open).
         // Dialogs opt in via `dialog_alt_reset::supported` (per marker).
@@ -449,6 +450,8 @@ fn button_row(
         let clicked = if d.kind == DialogKind::Command && fields.get("__prefsui").and_then(Value::as_str) == Some("removeModels") {
             // Model changes apply immediately; there is no draft to cancel.
             dialog_buttons(ui, &[DialogButton::new(ButtonRole::Default, tl!("Close"), 84.0)])
+        } else if d.kind == DialogKind::Command && crate::prefs_ui::owns_remove_setup(fields) {
+            dialog_buttons(ui, &[DialogButton::new(ButtonRole::Default, crate::prefs_ui::remove_setup_confirm_label(fields), 152.0).enabled(can_ok), cancel])
         } else if d.kind == DialogKind::Command && crate::prefs_ui::is_preferences(fields) {
             let changed = crate::prefs_ui::preferences_changed(app, fields);
             dialog_buttons(ui, &[ok, cancel, DialogButton::new(ButtonRole::Apply, tl!("Apply"), 84.0).enabled(changed)])
@@ -931,6 +934,11 @@ fn confirm_generic_command(app: &mut PhotocraftApp, d: Dialog) -> Result<Value, 
 /// The checks before a dialog is confirmed: no open child picker, the automation gate for a handler
 /// that touches files itself, and a valid guide layout.
 fn confirm_preflight(app: &mut PhotocraftApp, id: u64) -> Result<(), String> {
+    if let Some(fields) =
+        app.ui.dialogs.iter().find(|dialog| dialog.id == id && crate::prefs_ui::owns_remove_setup(&dialog.fields)).map(|dialog| dialog.fields.clone())
+    {
+        crate::prefs_ui::remove_setup_preflight(app, &fields)?;
+    }
     if crate::layer_style::color_picker::has_child(app, id) {
         return Err("confirm or cancel the Layer Style color picker first".into());
     }

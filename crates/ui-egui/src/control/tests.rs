@@ -2096,22 +2096,31 @@ fn remove_options_are_drivable_and_invalid_updates_are_atomic() {
         "ui.set",
         json!({
             "tool":"remove", "removeMethod":"auto", "removeSampleAllLayers":true,
-            "removeNewLayer":true, "removeAfterEachStroke":false, "removeEffects":true
+            "removeNewLayer":true, "removeAfterEachStroke":false, "removeEffects":true, "removeRepairType":"detail"
         }),
     );
     assert_eq!(good["ok"], true, "{good}");
     let seen = call(&mut app, &ctx, "ui.inspect", json!({}));
     assert_eq!(seen["result"]["remove"]["method"], "auto");
+    assert_eq!(seen["result"]["remove"]["repairType"], "detail");
     assert_eq!(seen["result"]["remove"]["pendingStrokes"], 0);
     assert_eq!(seen["result"]["toolOptions"]["remove_new_layer"], true);
     assert_eq!(seen["result"]["toolOptions"]["remove_effects"], true);
-    for invalid in [json!({"removeMethod":"unknown"}), json!({"removeMethod":1}), json!({"removeNewLayer":"yes"}), json!({"removeEffects":"yes"})] {
+    for invalid in [
+        json!({"removeMethod":"unknown"}),
+        json!({"removeMethod":1}),
+        json!({"removeNewLayer":"yes"}),
+        json!({"removeEffects":"yes"}),
+        json!({"removeRepairType":"unknown"}),
+        json!({"removeRepairType":4}),
+    ] {
         let mut params = invalid.as_object().unwrap().clone();
         params.insert("removeAfterEachStroke".into(), json!(true));
         assert_eq!(call(&mut app, &ctx, "ui.set", Value::Object(params))["ok"], false);
         assert!(!app.ui.tool_options.remove_after_each_stroke, "invalid calls change nothing");
     }
     assert_eq!(app.ui.tool_options.remove_method, "auto");
+    assert_eq!(app.ui.tool_options.remove_repair_type, "detail");
 }
 
 #[test]

@@ -356,7 +356,15 @@ pub(crate) fn canonical_remove_params(id: &str, mut params: Value, result: &mut 
     let brushes = result.as_object_mut().and_then(|object| object.remove("__removeBrushes"));
     let Some(method) = result.get("effectiveMethod").and_then(Value::as_str) else { return params };
     let Some(object) = params.as_object_mut() else { return params };
-    object.insert("method".into(), json!(method));
+    object.insert("method".into(), json!(if method == "hybrid" { "auto" } else { method }));
+    if method == "hybrid" {
+        object.insert("preview".into(), json!(true));
+        for key in ["regionalPlan", "modelRevisions"] {
+            if let Some(value) = result.get(key) {
+                object.insert(key.into(), value.clone());
+            }
+        }
+    }
     if method == "ai" {
         for key in ["modelId", "modelSha256"] {
             if let Some(value) = result.get(key) {

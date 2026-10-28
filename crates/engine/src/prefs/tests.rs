@@ -1038,10 +1038,31 @@ fn a_wrongly_typed_section_or_colour_setting_resets_only_that_part() {
 fn generative_remove_defaults_are_explicitly_opt_in_and_persist() {
     let mut s = Session::new();
     let r = s.execute("prefs.get", json!({"path":"generativeRemove"})).unwrap();
-    assert_eq!(r, json!({"enabled":false,"enabledModels":["lama"],"selectedModel":"lama"}));
+    assert_eq!(r, json!({"workflow":"custom","setupComplete":false,"enabled":false,"enabledModels":["lama"],"selectedModel":"lama"}));
     s.execute("prefs.set", json!({"path":"generativeRemove.enabled", "value":true})).unwrap();
     let saved = s.prefs_to_json();
     let mut restored = Session::new();
     restored.load_prefs_json(&saved).unwrap();
     assert_eq!(restored.execute("prefs.get", json!({"path":"generativeRemove.enabled"})).unwrap(), true);
+}
+
+#[test]
+fn remove_setup_preserves_migrated_choices_and_rejects_invalid_changes_atomically() {
+    let old: GenerativeRemove = serde_json::from_value(json!({"enabled":true,"enabledModels":["migan-v1"],"selectedModel":"migan-v1"})).unwrap();
+    let value = serde_json::to_value(&old).unwrap();
+    assert_eq!(value["workflow"], "custom");
+    assert_eq!(value["setupComplete"], false);
+    let mut s = Session::new();
+    let before = s.prefs_to_json();
+    for p in [json!({"workflow":"unknown"}), json!({"workflow":"recommended","memoryUsageMb":1}), json!({"workflow":"recommended","unknown":true})] {
+        assert!(s.execute("remove.setup", p).is_err());
+        assert_eq!(s.prefs_to_json(), before);
+    }
+    s.execute("remove.setup", json!({"workflow":"recommended","memoryUsageMb":65536})).unwrap();
+    let prefs = s.execute("prefs.get", json!({"path":"generativeRemove"})).unwrap();
+    assert_eq!(prefs["workflow"], "recommended");
+    assert_eq!(prefs["setupComplete"], true);
+    assert_eq!(prefs["enabledModels"], json!(["lama", "osor-sdxl"]));
+    assert_eq!(prefs["enabled"], true);
+    assert!(s.execute("prefs.set", json!({"path":"generativeRemove.workflow","value":"unknown"})).is_err());
 }

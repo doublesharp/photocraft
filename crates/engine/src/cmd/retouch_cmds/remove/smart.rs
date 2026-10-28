@@ -11,6 +11,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(super) enum Method {
     Legacy,
+    Hybrid,
     Classical { fallback: Option<String> },
     Ai { id: String, sha256: String, automatic: bool },
 }
@@ -19,7 +20,10 @@ pub(super) enum Method {
 pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
     let method = match p.get("method") {
         None => {
-            if ["modelId", "modelSha256", "removeEffects", "preview", "strokeSpecs", "seed"].iter().any(|k| p.get(*k).is_some()) {
+            if ["modelId", "modelSha256", "removeEffects", "preview", "strokeSpecs", "seed", "repairType", "regionalPlan", "modelRevisions"]
+                .iter()
+                .any(|k| p.get(*k).is_some())
+            {
                 return Err(bad(CMD, "new Remove options require an explicit method"));
             }
             return Ok(());
@@ -49,6 +53,9 @@ pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
         "sampleAllLayers",
         "newLayer",
         "coalesce",
+        "repairType",
+        "regionalPlan",
+        "modelRevisions",
     ];
     if let Some(key) = obj.keys().find(|key| !KEYS.contains(&key.as_str())) {
         let shown: String = key.chars().take(64).collect();
@@ -79,7 +86,7 @@ pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
         let mut total = 0usize;
         for stroke in strokes {
             let points = if let Some(obj) = stroke.as_object() {
-                if obj.keys().any(|key| !["points", "brush", "size", "hardness", "spacing"].contains(&key.as_str())) {
+                if obj.keys().any(|key| !["points", "brush", "size", "hardness", "spacing", "repairType"].contains(&key.as_str())) {
                     return Err(bad(CMD, "unknown stroke option"));
                 }
                 for (key, lo, hi) in [("size", 1.0, 5000.0), ("hardness", 0.0, 100.0), ("spacing", 1.0, 1000.0)] {
@@ -104,12 +111,21 @@ pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
             return Err(bad(CMD, format!("`{key}` must be a boolean")));
         }
     }
-    let preview = p.get("preview").and_then(Value::as_bool) == Some(true);
+    super::hybrid::validate_hints(p)?;
+    let configured = s.prefs().generative_remove.workflow.as_str();
+    let hybrid = method == "auto" && configured == "recommended";
+    if !hybrid && (p.get("regionalPlan").is_some() || p.get("modelRevisions").is_some()) {
+        return Err(bad(CMD, "frozen regional metadata requires the recommended Auto workflow"));
+    }
+    let profile_ai = method == "auto" && matches!(configured, "recommended" | "lama" | "compact");
+    let preview = hybrid || p.get("preview").and_then(Value::as_bool) == Some(true);
     let effects = p.get("removeEffects").and_then(Value::as_bool) == Some(true);
-    if preview && method != "ai" {
+    if preview && method != "ai" && !profile_ai {
         return Err(bad(CMD, "Remove previews require the explicit ai method"));
     }
-    if effects && (method != "ai" || !preview || p.get("modelId").and_then(Value::as_str).unwrap_or(&s.prefs().generative_remove.selected_model) != "osor-sdxl")
+    if effects
+        && !hybrid
+        && (method != "ai" || !preview || p.get("modelId").and_then(Value::as_str).unwrap_or(&s.prefs().generative_remove.selected_model) != "osor-sdxl")
     {
         return Err(bad(CMD, "effect removal requires an OSOR-SDXL preview"));
     }
@@ -122,7 +138,7 @@ pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
     if p.get("seed").is_some_and(|v| v.as_u64().is_none()) {
         return Err(bad(CMD, "`seed` must be a nonnegative integer"));
     }
-    if method == "ai" && p.get("seed").and_then(Value::as_u64).is_some_and(|seed| seed != SEED) {
+    if (method == "ai" || profile_ai) && p.get("seed").and_then(Value::as_u64).is_some_and(|seed| seed != SEED) {
         return Err(bad(CMD, "this deterministic AI adapter does not support a custom seed"));
     }
     if p.get("coalesce").is_some_and(|value| value.as_str().is_none_or(|key| key.len() > 256)) {
@@ -267,6 +283,29 @@ pub(super) fn context_reason(s: &Session, p: &Value) -> Option<String> {
     None
 }
 
+fn require_model(s: &Session, p: &Value, id: &str) -> Result<()> {
+    let prefs = &s.prefs().generative_remove;
+    let service = s.removal_service();
+    if !prefs.enabled {
+        return Err(bad(CMD, "local AI processing is disabled"));
+    }
+    if !prefs.enabled_models.iter().any(|model| model == id) {
+        return Err(bad(CMD, format!("removal model `{id}` is disabled")));
+    }
+    if !service.model_runtime_available(id) {
+        return Err(bad(CMD, format!("local AI inference for `{id}` is unavailable in this build")));
+    }
+    if let Some(reason) = context_reason(s, p) {
+        return Err(bad(CMD, reason));
+    }
+    match service.status().into_iter().find(|status| status.id == id) {
+        Some(status) if status.busy => Err(bad(CMD, "local AI is busy")),
+        Some(status) if status.available => Ok(()),
+        Some(status) => Err(bad(CMD, format!("{id}: {}", status.reason.as_deref().unwrap_or("model is not installed; explicitly install it first")))),
+        None => Err(bad(CMD, format!("removal model `{id}` is unavailable"))),
+    }
+}
+
 pub(super) fn decide(s: &Session, p: &Value) -> Result<Method> {
     validate(s, p)?;
     let Some(method) = p.get("method").and_then(Value::as_str) else { return Ok(Method::Legacy) };
@@ -275,6 +314,21 @@ pub(super) fn decide(s: &Session, p: &Value) -> Result<Method> {
     }
     let automatic = method == "auto";
     let prefs = &s.prefs().generative_remove;
+    if automatic && prefs.workflow == "classical" {
+        return Ok(Method::Classical { fallback: None });
+    }
+    if automatic && prefs.workflow == "recommended" {
+        for id in ["lama", "osor-sdxl"] {
+            require_model(s, p, id)?;
+        }
+        return Ok(Method::Hybrid);
+    }
+    if automatic && matches!(prefs.workflow.as_str(), "lama" | "compact") {
+        let id = if prefs.workflow == "compact" { "migan-v1" } else { "lama" };
+        require_model(s, p, id)?;
+        let sha256 = s.removal_service().model_sha256(id).map_err(|error| bad(CMD, error.to_string()))?;
+        return Ok(Method::Ai { id: id.into(), sha256, automatic: false });
+    }
     let id = p.get("modelId").and_then(Value::as_str).unwrap_or(&prefs.selected_model);
     let service = s.removal_service();
     let spec = service.catalog().iter().find(|spec| spec.id == id);
@@ -314,15 +368,28 @@ pub(super) fn decide(s: &Session, p: &Value) -> Result<Method> {
 /// admission policy, not a process RSS cap. The model's own allowance comes from the catalog.
 #[derive(Clone, Copy)]
 pub(super) struct Admission {
-    transient_bytes: u64,
-    budget_bytes: u64,
-    required_bytes: u64,
+    pub(super) transient_bytes: u64,
+    pub(super) budget_bytes: u64,
+    pub(super) required_bytes: u64,
 }
 
 pub(super) fn admission(plan: &Plan, method: &Method, service: &photocraft_ml::RemovalService, budget_bytes: u64) -> Result<Option<Admission>> {
-    let Method::Ai { id, .. } = method else { return Ok(None) };
-    let pixels = u64::from(plan.window.width())
-        .checked_mul(u64::from(plan.window.height()))
+    let ids = match method {
+        Method::Ai { id, .. } => vec![id.as_str()],
+        Method::Hybrid => vec!["lama", "osor-sdxl"],
+        _ => return Ok(None),
+    };
+    let crop_pixels = if matches!(method, Method::Hybrid) {
+        plan.regions.iter().try_fold(0u64, |sum, region| {
+            u64::from(region.window.width())
+                .checked_mul(u64::from(region.window.height()))
+                .and_then(|n| n.checked_mul(region.models.len() as u64))
+                .and_then(|n| sum.checked_add(n))
+        })
+    } else {
+        u64::from(plan.window.width()).checked_mul(u64::from(plan.window.height()))
+    };
+    let pixels = crop_pixels
         .filter(|pixels| *pixels > 0 && *pixels <= photocraft_ml::MAX_INPUT_PIXELS)
         .ok_or_else(|| bad(CMD, "the AI sampling window is too large"))?;
     // Coverage renders strokes one at a time, and its tiled extent can extend outside the
@@ -338,8 +405,14 @@ pub(super) fn admission(plan: &Plan, method: &Method, service: &photocraft_ml::R
         .and_then(|bytes| bytes.checked_add(plan.stroke_work_bytes))
         .and_then(|bytes| bytes.checked_add(FIXED_BYTES))
         .ok_or_else(|| bad(CMD, "AI Remove memory estimate is too large"))?;
-    let model = service.catalog().iter().find(|model| model.id == id).ok_or_else(|| bad(CMD, "unknown removal model"))?;
-    let required_bytes = u64::from(model.memory_mib)
+    let memory_mib = ids
+        .iter()
+        .map(|id| service.catalog().iter().find(|model| model.id == *id).map(|model| model.memory_mib).ok_or_else(|| bad(CMD, "unknown removal model")))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    let required_bytes = u64::from(memory_mib)
         .checked_mul(1024 * 1024)
         .and_then(|bytes| bytes.checked_add(transient_bytes))
         .ok_or_else(|| bad(CMD, "AI Remove memory estimate is too large"))?;
@@ -361,12 +434,16 @@ pub(super) enum Content {
     Ai(AiContent),
 }
 
-/// Field order matters: the output buffers drop before their process-wide reservation.
-pub(super) struct AiContent {
+pub(super) struct AiPatch {
     pub rgb: Vec<f32>,
     pub coverage: Vec<f32>,
     pub rect: Rect,
-    _reservation: photocraft_ml::RemovalReservation,
+}
+
+/// Output patches drop before their process-wide reservation.
+pub(super) struct AiContent {
+    pub patches: Vec<AiPatch>,
+    pub _reservation: photocraft_ml::RemovalReservation,
 }
 
 pub(super) struct Outcome {
@@ -390,7 +467,11 @@ pub(super) fn work(
     admission: Option<Admission>,
     ctx: &crate::jobs::JobCtx,
 ) -> Result<Outcome> {
+    if matches!(method, Method::Hybrid) {
+        return super::hybrid::work(doc, plan, p, service, admission.ok_or_else(|| bad(CMD, "hybrid Remove was not admitted"))?, ctx);
+    }
     let (id, sha256, automatic) = match method {
+        Method::Hybrid => return Err(bad(CMD, "invalid hybrid dispatch")),
         Method::Legacy => return classical(doc, plan, p, ctx, None, true),
         Method::Classical { fallback } => return classical(doc, plan, p, ctx, fallback, false),
         Method::Ai { id, sha256, automatic } => (id, sha256, automatic),
@@ -502,7 +583,25 @@ pub(super) fn work(
         "memoryBudgetBytes":admission.budget_bytes});
     ctx.check()?;
     let reservation = permit.into_reservation();
-    Ok(Outcome { content: Content::Ai(AiContent { rgb, coverage, rect: plan.window, _reservation: reservation }), metadata: Some(metadata) })
+    Ok(Outcome {
+        content: Content::Ai(AiContent { patches: vec![AiPatch { rgb, coverage, rect: plan.window }], _reservation: reservation }),
+        metadata: Some(metadata),
+    })
+}
+
+pub(super) fn apply_content(doc: &mut Document, id: Option<LayerId>, p: &Value, content: &AiContent, new_layer: bool) -> Result<(Rect, Option<LayerId>)> {
+    let mut target = id;
+    let mut created = None;
+    let mut damage = None::<Rect>;
+    for patch in &content.patches {
+        let (rect, new_id) = apply(doc, target, p, patch.rect, &patch.rgb, &patch.coverage, new_layer && created.is_none())?;
+        if let Some(new_id) = new_id {
+            created = Some(new_id);
+            target = Some(new_id);
+        }
+        damage = Some(damage.map_or(rect, |old| old.union(&rect)));
+    }
+    Ok((damage.ok_or_else(|| bad(CMD, "empty AI Remove candidate"))?, created))
 }
 
 pub(super) fn apply(

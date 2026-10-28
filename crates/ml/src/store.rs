@@ -1,6 +1,8 @@
 //! Managed, content-pinned model files. One service admits one resource owner at a time.
 mod capability;
 #[cfg(feature = "osor")]
+mod osor_install;
+#[cfg(feature = "osor")]
 pub(crate) mod osor_reference;
 
 use std::collections::HashMap;
@@ -115,11 +117,11 @@ impl NativeService {
     #[cfg(feature = "osor")]
     pub fn osor_runtime_available(&self) -> bool {
         let backend = *self.osor_backend.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        #[cfg(all(feature = "osor-metal", target_os = "macos"))]
+        #[cfg(target_os = "macos")]
         {
             matches!(backend, crate::OsorBackend::Cpu | crate::OsorBackend::Metal { .. })
         }
-        #[cfg(not(all(feature = "osor-metal", target_os = "macos")))]
+        #[cfg(not(target_os = "macos"))]
         {
             matches!(backend, crate::OsorBackend::Cpu)
         }
@@ -194,7 +196,7 @@ impl NativeService {
                         available: false,
                         busy,
                         verified: false,
-                        reason: Some("OSOR inference requires the native osor feature and an explicitly imported local bundle".into()),
+                        reason: Some("OSOR inference and model preparation require the native osor feature".into()),
                     };
                 }
                 let fingerprint = self.directory(false).ok().and_then(|dir| {
@@ -285,7 +287,13 @@ impl NativeService {
         let _lease = self.begin()?;
         check(ctl)?;
         if model.id == "osor-sdxl" {
-            return Err(Error::Download("OSOR is local-import only; select a converted bundle directory".into()));
+            #[cfg(feature = "osor")]
+            {
+                self.prepare_model("", true);
+                return osor_install::install(self, ctl);
+            }
+            #[cfg(not(feature = "osor"))]
+            return Err(Error::Unavailable);
         }
         let dir = self.directory(true)?;
         match self.verify_in(&dir, model, ctl) {
@@ -500,20 +508,30 @@ pub(crate) fn verified_snapshot(file: &mut File, model: &ModelSpec, ctl: &dyn Re
     Ok(bytes)
 }
 
-fn verify_reader(reader: &mut dyn Read, model: &ModelSpec, ctl: &dyn RemovalControl, mut write: Option<&mut dyn Write>) -> Result<()> {
+fn verify_reader(reader: &mut dyn Read, model: &ModelSpec, ctl: &dyn RemovalControl, write: Option<&mut dyn Write>) -> Result<()> {
+    verify_pinned_reader(reader, model.bytes, model.sha256, ctl, write)
+}
+
+fn verify_pinned_reader(
+    reader: &mut dyn Read,
+    expected_bytes: u64,
+    expected_sha256: &str,
+    ctl: &dyn RemovalControl,
+    mut write: Option<&mut dyn Write>,
+) -> Result<()> {
     let mut sha = Sha256::new();
     let mut bytes = 0u64;
     let mut buffer = [0u8; 65_536];
     loop {
         check(ctl)?;
-        let limit = (model.bytes.saturating_sub(bytes).saturating_add(1)).min(buffer.len() as u64) as usize;
+        let limit = (expected_bytes.saturating_sub(bytes).saturating_add(1)).min(buffer.len() as u64) as usize;
         let slice = buffer.get_mut(..limit).ok_or_else(|| Error::Integrity("invalid model byte bound".into()))?;
         let n = reader.read(slice)?;
         if n == 0 {
             break;
         }
         bytes = bytes.saturating_add(n as u64);
-        if bytes > model.bytes {
+        if bytes > expected_bytes {
             return Err(Error::Integrity("download exceeds the pinned model size".into()));
         }
         let part = slice.get(..n).ok_or_else(|| Error::Integrity("invalid model stream".into()))?;
@@ -521,13 +539,13 @@ fn verify_reader(reader: &mut dyn Read, model: &ModelSpec, ctl: &dyn RemovalCont
         if let Some(file) = write.as_deref_mut() {
             file.write_all(part)?;
         }
-        ctl.progress((bytes as f32 / model.bytes.max(1) as f32) * 0.98, "Verifying model data");
+        ctl.progress((bytes as f32 / expected_bytes.max(1) as f32) * 0.98, "Verifying model data");
     }
-    if bytes != model.bytes {
-        return Err(Error::Integrity(format!("expected {} model bytes, received {bytes}", model.bytes)));
+    if bytes != expected_bytes {
+        return Err(Error::Integrity(format!("expected {expected_bytes} model bytes, received {bytes}")));
     }
     let digest = format!("{:x}", sha.finalize());
-    if digest != model.sha256 {
+    if digest != expected_sha256 {
         return Err(Error::Integrity("SHA-256 does not match the pinned model; the previous install is unchanged".into()));
     }
     Ok(())

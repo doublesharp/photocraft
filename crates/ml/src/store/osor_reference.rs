@@ -15,6 +15,8 @@ use osor_rs::artifact::{MANIFEST_FILE, Manifest, PROMPT_FILE, UNET_FILE, VAE_FIL
 use serde::{Deserialize, Serialize};
 
 pub(super) const RECEIPT: &str = "osor-sdxl-reference.json";
+pub(super) const LICENSE_FILE: &str = "LICENSE-OSOR-SDXL.txt";
+pub(super) const NOTICE_FILE: &str = "NOTICE-OSOR-SDXL.txt";
 const FILES: [&str; 4] = [MANIFEST_FILE, UNET_FILE, VAE_FILE, PROMPT_FILE];
 const MAX_MANIFEST: u64 = 1024 * 1024;
 const MAX_RECEIPT: u64 = 2 * MAX_MANIFEST;
@@ -62,6 +64,8 @@ pub(super) fn decoded_header_bytes(header: &[u8], limit: u64) -> Result<u64> {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Reference {
     schema: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed: Option<String>,
     pub path: PathBuf,
     pub manifest: Manifest,
     files: Vec<PinnedFile>,
@@ -177,6 +181,11 @@ fn validate_reference(reference: &Reference) -> Result<()> {
     if reference.schema != 1 || !reference.path.is_absolute() || reference.files.len() != FILES.len() {
         return Err(invalid("unsupported OSOR reference receipt"));
     }
+    if let Some(name) = &reference.managed
+        && (name.len() != 42 || !name.starts_with("osor-sdxl-") || !name.get(10..).is_some_and(|suffix| suffix.bytes().all(|byte| byte.is_ascii_hexdigit())))
+    {
+        return Err(invalid("invalid managed OSOR bundle identity"));
+    }
     let expected = [None, Some(&reference.manifest.sha256.unet), Some(&reference.manifest.sha256.vae), Some(&reference.manifest.sha256.prompt)];
     let mut total = 0u64;
     for ((file, name), digest) in reference.files.iter().zip(FILES).zip(expected) {
@@ -205,6 +214,13 @@ fn read_reference(service: &NativeService) -> Result<(StoreDir, File, Reference)
     let bytes = bounded_read(&mut file, MAX_RECEIPT)?;
     let reference: Reference = serde_json::from_slice(&bytes).map_err(|e| invalid(format!("invalid OSOR receipt: {e}")))?;
     validate_reference(&reference)?;
+    if let Some(name) = &reference.managed {
+        let base = service.directory.as_ref().ok_or_else(|| invalid("managed OSOR storage is unavailable"))?;
+        let expected = if base.is_absolute() { base.join(name) } else { std::env::current_dir()?.join(base).join(name) };
+        if reference.path != expected {
+            return Err(invalid("managed OSOR bundle is outside its owning store"));
+        }
+    }
     store.ensure_attached()?;
     if !same_file(&file, &store.open_regular(OsStr::new(RECEIPT))?)? {
         return Err(invalid("OSOR receipt changed while opening"));
@@ -213,14 +229,55 @@ fn read_reference(service: &NativeService) -> Result<(StoreDir, File, Reference)
 }
 
 pub(super) fn import(service: &NativeService, path: &Path, ctl: &dyn RemovalControl) -> Result<()> {
+    import_inner(service, path, None, None, ctl)
+}
+
+pub(super) fn import_managed(service: &NativeService, path: &Path, name: &str, source: &StoreDir, manifest: &Manifest, ctl: &dyn RemovalControl) -> Result<()> {
+    import_inner(service, path, Some(name.into()), Some((source, manifest)), ctl)
+}
+
+struct ReceiptPublication<'a> {
+    store: &'a StoreDir,
+    file: &'a File,
+    rollback: bool,
+}
+
+impl Drop for ReceiptPublication<'_> {
+    fn drop(&mut self) {
+        if self.rollback && self.store.open_regular(OsStr::new(RECEIPT)).is_ok_and(|current| same_file(self.file, &current).unwrap_or(false)) {
+            let _ = self.store.dir.remove_file(RECEIPT);
+        }
+    }
+}
+
+fn import_inner(
+    service: &NativeService,
+    path: &Path,
+    managed: Option<String>,
+    expected: Option<(&StoreDir, &Manifest)>,
+    ctl: &dyn RemovalControl,
+) -> Result<()> {
     let path = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir()?.join(path) };
+    if let Some((source, _)) = expected {
+        source.ensure_attached()?;
+    }
     let source = StoreDir::acquire(&path, false)?;
+    if let Some((held, _)) = expected
+        && !source.same_directory(held)?
+    {
+        return Err(invalid("prepared OSOR directory was replaced before reference publication"));
+    }
     let mut files = open_files(&source)?;
     let manifest_file = files.first_mut().ok_or_else(|| invalid("missing OSOR manifest"))?;
     let bytes = bounded_read(manifest_file, MAX_MANIFEST)?;
     manifest_file.seek(SeekFrom::Start(0))?;
     let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| invalid(format!("invalid OSOR manifest: {e}")))?;
     manifest.validate().map_err(|e| invalid(e.to_string()))?;
+    if let Some((_, prepared)) = expected
+        && serde_json::to_vec(&manifest).map_err(|e| invalid(e.to_string()))? != serde_json::to_vec(prepared).map_err(|e| invalid(e.to_string()))?
+    {
+        return Err(invalid("prepared OSOR manifest differs from the completed conversion"));
+    }
     let mut pinned = Vec::new();
     let mut decoded_remaining = MAX_DECODED_WEIGHTS;
     for (name, file) in FILES.iter().zip(&mut files) {
@@ -232,7 +289,7 @@ pub(super) fn import(service: &NativeService, path: &Path, ctl: &dyn RemovalCont
     if pinned.first().is_none_or(|pin| pin.sha256 != format!("{:x}", Sha256::digest(&bytes))) {
         return Err(invalid("OSOR manifest changed while importing"));
     }
-    let reference = Reference { schema: 1, path, manifest, files: pinned };
+    let reference = Reference { schema: 1, managed, path, manifest, files: pinned };
     validate_reference(&reference)?;
     check_attached(&source, &files)?;
     let store = service.directory(true)?;
@@ -244,8 +301,9 @@ pub(super) fn import(service: &NativeService, path: &Path, ctl: &dyn RemovalCont
     store.ensure_attached()?;
     check(ctl)?;
     ctl.begin_irreversible()?;
+    let mut publication = ReceiptPublication { store: &store, file: &partial.file, rollback: false };
     match store.dir.hard_link(&partial.name, &store.dir, RECEIPT) {
-        Ok(()) => {}
+        Ok(()) => publication.rollback = true,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             let mut existing = store.open_regular(OsStr::new(RECEIPT))?;
             if bounded_read(&mut existing, MAX_RECEIPT)? != bytes {
@@ -260,6 +318,12 @@ pub(super) fn import(service: &NativeService, path: &Path, ctl: &dyn RemovalCont
     *service.osor_verified.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verified);
     *service.osor_invalid.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     ctl.progress(1., "Local OSOR bundle reference imported");
+    check_attached(&source, &files)?;
+    store.ensure_attached()?;
+    if !same_file(&receipt, &store.open_regular(OsStr::new(RECEIPT))?)? {
+        return Err(invalid("OSOR receipt changed during publication"));
+    }
+    publication.rollback = false;
     Ok(())
 }
 
@@ -335,5 +399,24 @@ pub(super) fn remove(service: &NativeService) -> Result<()> {
         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
+    // Only a validated app-owned receipt can authorize deleting a bundle. Imported
+    // source directories are never removed. Fixed files are removed by held handles;
+    // unrelated entries keep their directory alive.
+    if let Ok((_, _, reference)) = read_reference(service)
+        && let Some(name) = &reference.managed
+    {
+        match StoreDir::acquire(&reference.path, false) {
+            Ok(source) => {
+                for file in FILES {
+                    source.remove_regular(file)?;
+                }
+                source.remove_regular(LICENSE_FILE)?;
+                source.remove_regular(NOTICE_FILE)?;
+                store.remove_empty_child(name, &source)?;
+            }
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
     service.remove_in(&store, crate::catalog::find("osor-sdxl")?, || {})
 }

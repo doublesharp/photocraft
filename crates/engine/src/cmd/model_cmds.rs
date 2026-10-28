@@ -20,7 +20,7 @@ pub(crate) fn model_id<'a>(s: &Session, p: &'a Value, cmd: &str) -> Result<&'a s
 
 /// Model administration always requires an explicit direct user invocation.
 pub fn is_management(id: &str) -> bool {
-    matches!(id, "ai.models.install" | "ai.models.import" | "ai.models.remove")
+    matches!(id, "ai.models.install" | "ai.models.import" | "ai.models.remove" | "remove.setup")
 }
 
 pub(crate) fn refuse_playback(s: &Session, id: &str) -> Result<()> {
@@ -53,10 +53,13 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
                 "id":spec.id, "label":spec.label, "description":spec.description, "bytes":spec.bytes,
                 "sha256":spec.sha256, "url":spec.url, "license":spec.license, "source":spec.source,
                 "backend":spec.backend, "inputSize":spec.input_size, "memoryMib":spec.memory_mib,
+                "downloadBytes":spec.download_bytes, "installBytes":spec.install_bytes,
+                "preparationWorkspaceBytes":spec.preparation_workspace_bytes, "preparationMemoryMib":spec.preparation_memory_mib,
+                "licenseUrl":spec.license_url, "artifacts":spec.artifacts,
                 // `available` means this build supports the adapter, so an uninstalled model can be
                 // installed. A size-matching artifact can be attempted but still needs verification.
                 "available":service.model_runtime_available(spec.id), "canAttempt":status.is_some_and(|v| v.available), "autoQualified":false,
-                "artifactKind":if spec.id == "osor-sdxl" { "bundle" } else { "file" }, "canDownload":!spec.url.is_empty(),
+                "artifactKind":if spec.id == "osor-sdxl" { "bundle" } else { "file" }, "canDownload":!spec.url.is_empty() || !spec.artifacts.is_empty(),
                 "installed":status.is_some_and(|v| v.installed), "verified":status.is_some_and(|v| v.verified),
                 "busy":status.is_some_and(|v| v.busy), "reason":status.and_then(|v| v.reason.as_deref()),
                 "enabled":preferences.enabled_models.iter().any(|id| id == spec.id),
@@ -65,7 +68,53 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
         })
         .collect();
     Ok(json!({"runtimeAvailable":runtime, "managementAvailable":service.management_available() && management_allowed(s),
-        "enabled":preferences.enabled, "models":models}))
+        "enabled":preferences.enabled, "workflow":preferences.workflow, "setupComplete":preferences.setup_complete,
+        "componentIds":workflow_models(&preferences.workflow, &preferences.selected_model), "models":models}))
+}
+
+pub(crate) fn workflow_models<'a>(workflow: &str, custom: &'a str) -> Vec<&'a str> {
+    match workflow {
+        "recommended" => vec!["lama", "osor-sdxl"],
+        "lama" => vec!["lama"],
+        "compact" => vec!["migan-v1"],
+        "classical" => Vec::new(),
+        _ => vec![custom],
+    }
+}
+
+fn setup(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "remove.setup";
+    refuse_playback(s, CMD)?;
+    let object = p.as_object().ok_or_else(|| bad(CMD, "params must be an object"))?;
+    if object.keys().any(|key| !["workflow", "memoryUsageMb"].contains(&key.as_str())) {
+        return Err(bad(CMD, "only workflow and optional memoryUsageMb are accepted; downloads require ai.models.install"));
+    }
+    let workflow = p
+        .get("workflow")
+        .and_then(Value::as_str)
+        .filter(|id| matches!(*id, "recommended" | "lama" | "compact" | "classical" | "custom"))
+        .ok_or_else(|| bad(CMD, "unknown Remove workflow"))?
+        .to_string();
+    let budget = p
+        .get("memoryUsageMb")
+        .map(|value| value.as_u64().filter(|n| (256..=1_048_576).contains(n)).ok_or_else(|| bad(CMD, "memoryUsageMb must be within 256..1048576")))
+        .transpose()?;
+    let models = workflow_models(&workflow, &s.prefs().generative_remove.selected_model).into_iter().map(str::to_owned).collect::<Vec<_>>();
+    s.edit_prefs(|prefs| {
+        prefs.generative_remove.workflow = workflow.clone();
+        prefs.generative_remove.setup_complete = true;
+        if workflow != "custom" {
+            prefs.generative_remove.enabled = workflow != "classical";
+            prefs.generative_remove.enabled_models = models;
+            if let Some(model) = prefs.generative_remove.enabled_models.first() {
+                prefs.generative_remove.selected_model = model.clone();
+            }
+        }
+        if let Some(budget) = budget {
+            prefs.performance.memory_usage_mb = budget as u32;
+        }
+    });
+    capabilities(s, &json!({}))
 }
 
 fn capabilities(s: &mut Session, p: &Value) -> Result<Value> {
@@ -75,28 +124,43 @@ fn capabilities(s: &mut Session, p: &Value) -> Result<Value> {
     let mut result = list(s, p)?;
     let target_reason = crate::retouch_cmds::removal_context_reason(s, p);
     let prefs = &s.prefs().generative_remove;
-    let id = p.get("modelId").and_then(Value::as_str).unwrap_or(&prefs.selected_model);
     let service = s.removal_service();
-    let reason = if !prefs.enabled {
+    let components = if let Some(id) = p.get("modelId").and_then(Value::as_str) { vec![id] } else { workflow_models(&prefs.workflow, &prefs.selected_model) };
+    let statuses = service.status();
+    let reason = if components.is_empty() {
+        None
+    } else if !prefs.enabled {
         Some("local AI processing is disabled".to_string())
-    } else if !prefs.enabled_models.iter().any(|model| model == id) {
-        Some("the selected removal model is disabled".to_string())
-    } else if !service.model_runtime_available(id) {
-        Some("local AI inference is unavailable in this build".to_string())
     } else if let Some(reason) = target_reason.clone() {
         Some(reason)
-    } else if let Some(status) = service.status().into_iter().find(|status| status.id == id) {
-        if status.busy {
-            Some("local AI is busy".into())
-        } else if !status.available {
-            Some(status.reason.unwrap_or_else(|| "model is not installed".into()))
-        } else {
-            None
-        }
     } else {
-        Some("the selected removal model is unknown".into())
+        components.iter().find_map(|id| {
+            if !prefs.enabled_models.iter().any(|model| model == id) {
+                Some(format!("removal model `{id}` is disabled"))
+            } else if !service.model_runtime_available(id) {
+                Some(format!("local inference for `{id}` is unavailable in this build"))
+            } else {
+                match statuses.iter().find(|status| status.id == *id) {
+                    Some(status) if status.busy => Some("local AI is busy".into()),
+                    Some(status) if status.available => None,
+                    Some(status) => Some(format!("{id}: {}", status.reason.as_deref().unwrap_or("model is not installed"))),
+                    None => Some(format!("unknown removal model `{id}`")),
+                }
+            }
+        })
     };
     if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "workflows".into(),
+            json!([
+                {"id":"recommended","label":"Recommended — LaMa + OSOR","componentIds":["lama","osor-sdxl"],"previewRequired":true},
+                {"id":"lama","label":"LaMa only","componentIds":["lama"]},
+                {"id":"compact","label":"Compact","componentIds":["migan-v1"]},
+                {"id":"classical","label":"Classical","componentIds":[]},
+                {"id":"custom","label":"Custom","componentIds":[prefs.selected_model]}
+            ]),
+        );
+        object.insert("routingHeuristic".into(), json!("Auto routes elongated footprints (at least 3:1, minor extent at most 64 pixels) to LaMa; compact footprints to OSOR. Detail/Object overrides always win."));
         object.insert("targetCompatible".into(), json!(target_reason.is_none()));
         object.insert("compatible".into(), json!(reason.is_none()));
         object.insert("compatibilityReason".into(), json!(reason));
@@ -135,6 +199,7 @@ fn manage(s: &mut Session, p: &Value, cmd: &'static str) -> Result<Value> {
         "ai.models.import" => "Import model",
         _ => "Remove model",
     };
+    let budget_bytes = u64::from(s.prefs().performance.memory_usage_mb).saturating_mul(1024 * 1024);
     let result_id = id.clone();
     crate::jobs::run(
         s,
@@ -143,7 +208,7 @@ fn manage(s: &mut Session, p: &Value, cmd: &'static str) -> Result<Value> {
         move |ctx| {
             ctx.check()?;
             match cmd {
-                "ai.models.install" => service.install(&id, ctx).map_err(ml_error)?,
+                "ai.models.install" => service.install_with_memory_budget(&id, budget_bytes, ctx).map_err(ml_error)?,
                 "ai.models.import" => service.import(&id, path.as_deref().ok_or_else(|| bad(cmd, "missing path"))?, ctx).map_err(ml_error)?,
                 "ai.models.remove" => {
                     // Once unlink begins, do not claim cancellation when the file was removed.
@@ -162,6 +227,12 @@ pub fn specs() -> Vec<CommandSpec> {
     let spec = |id, label, params, run| CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: |_| Ok(()), run, journal: false };
     vec![
         spec("ai.models.list", "Local AI Models", r#"{} → {runtimeAvailable,managementAvailable,models}"#, list),
+        spec(
+            "remove.setup",
+            "Set Up Remove",
+            r#"{"workflow":"recommended|lama|compact|classical|custom","memoryUsageMb":u32?} → persist explicit choice; no downloads"#,
+            setup,
+        ),
         spec("remove.capabilities", "Remove Capabilities", r#"{"modelId":catalog id?} → availability and target requirements"#, capabilities),
         spec("ai.models.install", "Download Local Model", r#"{"modelId":catalog id}"#, |s, p| manage(s, p, "ai.models.install")),
         spec("ai.models.import", "Import Local Model", r#"{"modelId":catalog id,"path":local model file or bundle directory path}"#, |s, p| {

@@ -115,6 +115,8 @@ impl Session {
             "contextGeneration":capture.context_generation, "workingRgb":capture.working_rgb,
             "hasSelection":capture.source.selection.is_some(),
             "modelId":preview.candidate.result.get("modelId"), "modelSha256":preview.candidate.result.get("modelSha256"),
+            "effectiveMethod":preview.candidate.result.get("effectiveMethod"), "regionalPlan":preview.candidate.result.get("regionalPlan"),
+            "modelRevisions":preview.candidate.result.get("modelRevisions"),
             "crop":[preview.candidate.crop.x0,preview.candidate.crop.y0,preview.candidate.crop.x1,preview.candidate.crop.y1],
             "removeEffects":preview.candidate.params.get("removeEffects").and_then(Value::as_bool).unwrap_or(false)})
     }

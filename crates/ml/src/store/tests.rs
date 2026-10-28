@@ -5,6 +5,94 @@ use std::io::Cursor;
 // Admission is process-wide. Serialize tests that deliberately hold the shared permit.
 static ADMISSION_TEST: Mutex<()> = Mutex::new(());
 
+#[test]
+fn batch_admission_uses_maximum_family_memory_and_retains_output_lease() {
+    struct Echo;
+    impl RemovalBackend for Echo {
+        fn ready(&self, _: &str) -> bool {
+            true
+        }
+        fn infer(&self, _: &str, input: &RemovalInput, _: &dyn RemovalControl) -> Result<RemovalOutput> {
+            Ok(RemovalOutput { edit_alpha: None, rgb: input.rgb.clone(), inference_scale: 1., load_ms: 0., forward_ms: 0. })
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let service = RemovalService::new(None).with_backend(Arc::new(Echo));
+    let other = RemovalService::new(None).with_backend(Arc::new(Echo));
+    let working = u64::from(crate::catalog::find("lama").unwrap().memory_mib) * 1024 * 1024;
+    assert!(service.admit_models(&[], 56, u64::MAX).is_err());
+    assert!(service.admit_models(&["unknown"], 56, u64::MAX).is_err());
+    assert!(service.admit_models(&["lama", "migan-v1"], 56, working + 55).is_err());
+    assert!(service.admit_models(&["lama"], u64::MAX, u64::MAX).is_err());
+    let mut permit = service.admit_models(&["lama", "migan-v1"], 56, working + 56).expect("sequential families share the maximum working set");
+    assert!(matches!(other.admit_models(&["lama"], 56, u64::MAX), Err(Error::Busy)));
+    assert!(permit.model_sha256("osor-sdxl").is_err());
+    assert_eq!(permit.model_sha256("lama").unwrap(), crate::catalog::find("lama").unwrap().sha256);
+    let input = RemovalInput { width: 2, height: 1, rgb: vec![0.5; 6], mask: vec![0., 1.] };
+    for index in 0..32 {
+        let id = if index % 2 == 0 { "lama" } else { "migan-v1" };
+        assert_eq!(permit.infer(id, &input, &NoopControl).unwrap().rgb, input.rgb);
+    }
+    assert!(permit.infer("lama", &input, &NoopControl).is_err(), "batch must bound the number of model calls");
+    let reservation = permit.into_reservation();
+    drop(service);
+    assert!(matches!(other.remove("lama"), Err(Error::Busy)));
+    drop(reservation);
+    assert!(other.admit_models(&["lama"], 56, working + 56).is_ok());
+}
+
+#[test]
+fn cancelled_batch_drains_active_forward_and_keeps_its_result_reservation() {
+    struct Blocking {
+        calls: std::sync::atomic::AtomicUsize,
+        entered: std::sync::mpsc::Sender<()>,
+        exit: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl RemovalBackend for Blocking {
+        fn ready(&self, _: &str) -> bool {
+            true
+        }
+        fn infer(&self, _: &str, input: &RemovalInput, _: &dyn RemovalControl) -> Result<RemovalOutput> {
+            if self.calls.fetch_add(1, Ordering::AcqRel) == 1 {
+                self.entered.send(()).unwrap();
+                self.exit.lock().unwrap().recv().unwrap();
+            }
+            Ok(RemovalOutput { edit_alpha: None, rgb: input.rgb.clone(), inference_scale: 1., load_ms: 0., forward_ms: 0. })
+        }
+    }
+    struct Cancel(AtomicBool);
+    impl RemovalControl for Cancel {
+        fn cancelled(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+        fn progress(&self, _: f32, _: &str) {}
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+    let backend = Arc::new(Blocking { calls: std::sync::atomic::AtomicUsize::new(0), entered: entered_tx, exit: Mutex::new(exit_rx) });
+    let service = Arc::new(RemovalService::new(None).with_backend(backend));
+    let control = Arc::new(Cancel(AtomicBool::new(false)));
+    let worker_service = Arc::clone(&service);
+    let worker_control = Arc::clone(&control);
+    let worker = std::thread::spawn(move || {
+        let mut permit = worker_service.admit_models(&["lama", "migan-v1"], 56, u64::MAX).unwrap();
+        let input = RemovalInput { width: 2, height: 1, rgb: vec![0.5; 6], mask: vec![0., 1.] };
+        permit.infer("lama", &input, &NoopControl).unwrap();
+        assert!(matches!(permit.infer("migan-v1", &input, worker_control.as_ref()), Err(Error::Cancelled)));
+        assert!(permit.infer("lama", &input, &NoopControl).is_err(), "failed batch must not retry another model");
+        permit.into_reservation()
+    });
+    entered_rx.recv().unwrap();
+    control.0.store(true, Ordering::Release);
+    assert!(matches!(service.remove("lama"), Err(Error::Busy)));
+    exit_tx.send(()).unwrap();
+    let reservation = worker.join().unwrap();
+    assert!(matches!(service.remove("lama"), Err(Error::Busy)));
+    drop(reservation);
+    assert!(service.admit_models(&["lama"], 56, u64::MAX).is_ok());
+}
+
 static FIXTURE: ModelSpec = ModelSpec {
     id: "fixture",
     label: "Fixture",
@@ -17,6 +105,12 @@ static FIXTURE: ModelSpec = ModelSpec {
     backend: "test",
     input_size: 512,
     memory_mib: 1,
+    download_bytes: 5,
+    install_bytes: 5,
+    preparation_workspace_bytes: 5,
+    preparation_memory_mib: 0,
+    license_url: "https://example.invalid/license",
+    artifacts: &[],
 };
 
 #[test]
@@ -1007,7 +1101,7 @@ fn real_osor_service_smoke_restores_rgb_alpha_and_reuses_warm_family() {
 }
 
 #[test]
-fn osor_network_install_is_rejected_before_transport_or_storage() {
+fn osor_network_install_requires_memory_admission_before_transport_or_storage() {
     struct UnexpectedTransport(AtomicBool);
     impl ModelDownloader for UnexpectedTransport {
         fn open(&self, _: &ModelSpec) -> Result<Box<dyn Read + Send>> {
@@ -1018,8 +1112,328 @@ fn osor_network_install_is_rejected_before_transport_or_storage() {
     let _serial = ADMISSION_TEST.lock().unwrap();
     let transport = Arc::new(UnexpectedTransport(AtomicBool::new(false)));
     let service = RemovalService::default().with_downloader(transport.clone());
-    assert!(matches!(service.install("osor-sdxl", &NoopControl), Err(Error::Download(reason)) if reason.contains("local-import only")));
+    assert!(matches!(service.install("osor-sdxl", &NoopControl), Err(Error::InvalidInput(reason)) if reason.contains("memory budget")));
+    assert!(matches!(service.install_with_memory_budget("osor-sdxl", crate::OSOR_PREPARATION_BYTES - 1, &NoopControl), Err(Error::InvalidInput(_))));
     assert!(!transport.0.load(Ordering::Acquire));
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_admitted_install_rejects_failed_transfer_and_leaves_no_install() {
+    struct Truncated;
+    impl ModelDownloader for Truncated {
+        fn open(&self, _: &ModelSpec) -> Result<Box<dyn Read + Send>> {
+            Err(Error::Download("wrong transport".into()))
+        }
+        fn open_artifact(&self, _: &crate::ModelArtifact) -> Result<Box<dyn Read + Send>> {
+            Ok(Box::new(Cursor::new(b"mod")))
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("models");
+    let service = RemovalService::new(Some(root.clone())).with_downloader(Arc::new(Truncated));
+    assert!(
+        matches!(service.install_with_memory_budget("osor-sdxl", crate::OSOR_PREPARATION_BYTES, &NoopControl), Err(Error::Integrity(_))),
+        "a partial source must fail before conversion"
+    );
+    assert_eq!(fs::read_dir(root).unwrap().count(), 0, "owned input workspace must be cleaned");
+    assert!(!service.status().iter().any(|status| status.installed));
+}
+
+#[cfg(feature = "osor")]
+fn prepare_fixture_bundle(stage: &mut capability::StagedDirectory<'_>, fixture: &Path) -> Result<osor_rs::artifact::Manifest> {
+    for name in ["unet.safetensors", "vae.safetensors", "prompt.safetensors", "manifest.json"] {
+        stage.create_file(name)?.write_all(&fs::read(fixture.join(name))?)?;
+    }
+    serde_json::from_slice(&fs::read(fixture.join("manifest.json"))?).map_err(|error| Error::Integrity(error.to_string()))
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_owned_preparation_publishes_complete_bundle_and_removes_only_owned_files() {
+    struct Data;
+    impl ModelDownloader for Data {
+        fn open(&self, _: &ModelSpec) -> Result<Box<dyn Read + Send>> {
+            Err(Error::Unavailable)
+        }
+        fn open_artifact(&self, _: &crate::ModelArtifact) -> Result<Box<dyn Read + Send>> {
+            Ok(Box::new(Cursor::new(b"model")))
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("fixture");
+    osor_receipt_fixture(&source);
+    let root = temp.path().join("models");
+    let service = NativeService::new(Some(root.clone()));
+    service.set_downloader(Arc::new(Data));
+    let _lease = service.begin().unwrap();
+    let artifact = crate::ModelArtifact {
+        id: "fixture",
+        file_name: "input.safetensors",
+        bytes: FIXTURE.bytes,
+        sha256: FIXTURE.sha256,
+        url: FIXTURE.url,
+        license: "MIT",
+        license_url: FIXTURE.url,
+        source: FIXTURE.source,
+    };
+    osor_install::install_recipe(&service, &[artifact], &NoopControl, |stage, files, _| {
+        assert_eq!(files.len(), 1);
+        assert!(!root.join(osor_reference::RECEIPT).exists(), "receipt must publish after conversion");
+        prepare_fixture_bundle(stage, &source)
+    })
+    .unwrap();
+    let receipt: serde_json::Value = serde_json::from_slice(&fs::read(root.join(osor_reference::RECEIPT)).unwrap()).unwrap();
+    let path = PathBuf::from(receipt["path"].as_str().unwrap());
+    assert_eq!(fs::read_dir(&path).unwrap().count(), 6, "raw conversion inputs must be removed and the weight license and preparation notice retained");
+    assert_eq!(fs::read_to_string(path.join(osor_reference::LICENSE_FILE)).unwrap(), crate::OSOR_LICENSE_TEXT);
+    fs::write(path.join("unrelated"), b"keep").unwrap();
+    osor_reference::remove(&service).unwrap();
+    assert!(!root.join(osor_reference::RECEIPT).exists());
+    assert_eq!(fs::read(path.join("unrelated")).unwrap(), b"keep");
+    for name in ["manifest.json", "unet.safetensors", "vae.safetensors", "prompt.safetensors"] {
+        assert!(!path.join(name).exists());
+    }
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_cancelled_conversion_cleans_workspace_and_preserves_existing_reference() {
+    struct Data;
+    impl ModelDownloader for Data {
+        fn open(&self, _: &ModelSpec) -> Result<Box<dyn Read + Send>> {
+            Err(Error::Unavailable)
+        }
+        fn open_artifact(&self, _: &crate::ModelArtifact) -> Result<Box<dyn Read + Send>> {
+            Ok(Box::new(Cursor::new(b"model")))
+        }
+    }
+    struct Cancel(AtomicBool);
+    impl RemovalControl for Cancel {
+        fn cancelled(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+        fn progress(&self, _: f32, _: &str) {}
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("fixture");
+    osor_receipt_fixture(&source);
+    let root = temp.path().join("models");
+    let service = NativeService::new(Some(root.clone()));
+    service.set_downloader(Arc::new(Data));
+    let _lease = service.begin().unwrap();
+    let control = Cancel(AtomicBool::new(false));
+    let artifact = crate::ModelArtifact {
+        id: "fixture",
+        file_name: "input.safetensors",
+        bytes: FIXTURE.bytes,
+        sha256: FIXTURE.sha256,
+        url: FIXTURE.url,
+        license: "MIT",
+        license_url: FIXTURE.url,
+        source: FIXTURE.source,
+    };
+    assert!(matches!(
+        osor_install::install_recipe(&service, &[artifact], &control, |stage, _, _| {
+            let manifest = prepare_fixture_bundle(stage, &source)?;
+            control.0.store(true, Ordering::Release);
+            Ok(manifest)
+        }),
+        Err(Error::Cancelled)
+    ));
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    osor_reference::import(&service, &source, &NoopControl).unwrap();
+    let before = fs::read(root.join(osor_reference::RECEIPT)).unwrap();
+    let artifact = crate::ModelArtifact {
+        id: "fixture",
+        file_name: "input.safetensors",
+        bytes: FIXTURE.bytes,
+        sha256: FIXTURE.sha256,
+        url: FIXTURE.url,
+        license: "MIT",
+        license_url: FIXTURE.url,
+        source: FIXTURE.source,
+    };
+    osor_install::install_recipe(&service, &[artifact], &NoopControl, |_, _, _| Err(Error::Download("existing installation must bypass conversion".into())))
+        .unwrap();
+    assert_eq!(fs::read(root.join(osor_reference::RECEIPT)).unwrap(), before);
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_bundle_receipt_commit_never_overwrites_a_concurrent_valid_install() {
+    struct Data;
+    impl ModelDownloader for Data {
+        fn open(&self, _: &ModelSpec) -> Result<Box<dyn Read + Send>> {
+            Err(Error::Unavailable)
+        }
+        fn open_artifact(&self, _: &crate::ModelArtifact) -> Result<Box<dyn Read + Send>> {
+            Ok(Box::new(Cursor::new(b"model")))
+        }
+    }
+    struct Publish {
+        receipt: PathBuf,
+        bytes: Vec<u8>,
+    }
+    impl RemovalControl for Publish {
+        fn cancelled(&self) -> bool {
+            false
+        }
+        fn progress(&self, _: f32, _: &str) {}
+        fn begin_irreversible(&self) -> Result<()> {
+            fs::write(&self.receipt, &self.bytes)?;
+            Ok(())
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("fixture");
+    osor_receipt_fixture(&source);
+    let root = temp.path().join("models");
+    let service = NativeService::new(Some(root.clone()));
+    service.set_downloader(Arc::new(Data));
+    let _lease = service.begin().unwrap();
+    osor_reference::import(&service, &source, &NoopControl).unwrap();
+    let receipt = root.join(osor_reference::RECEIPT);
+    let before = fs::read(&receipt).unwrap();
+    fs::remove_file(&receipt).unwrap();
+    let artifact = crate::ModelArtifact {
+        id: "fixture",
+        file_name: "input.safetensors",
+        bytes: FIXTURE.bytes,
+        sha256: FIXTURE.sha256,
+        url: FIXTURE.url,
+        license: "MIT",
+        license_url: FIXTURE.url,
+        source: FIXTURE.source,
+    };
+    let control = Publish { receipt: receipt.clone(), bytes: before.clone() };
+    assert!(matches!(
+        osor_install::install_recipe(&service, &[artifact], &control, |stage, _, _| prepare_fixture_bundle(stage, &source)),
+        Err(Error::Storage(_))
+    ));
+    assert_eq!(fs::read(receipt).unwrap(), before);
+    assert_eq!(fs::read_dir(root).unwrap().count(), 1, "failed publication must clean its separate owned bundle");
+    assert!(source.join("unet.safetensors").exists());
+}
+
+#[cfg(all(feature = "osor", unix))]
+#[test]
+fn osor_preparation_rejects_store_swap_without_writing_outside_held_directory() {
+    struct Swap {
+        root: PathBuf,
+        moved: PathBuf,
+        outside: PathBuf,
+    }
+    impl ModelDownloader for Swap {
+        fn open(&self, _: &ModelSpec) -> Result<Box<dyn Read + Send>> {
+            Err(Error::Unavailable)
+        }
+        fn open_artifact(&self, _: &crate::ModelArtifact) -> Result<Box<dyn Read + Send>> {
+            fs::rename(&self.root, &self.moved)?;
+            std::os::unix::fs::symlink(&self.outside, &self.root)?;
+            Ok(Box::new(Cursor::new(b"model")))
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("models");
+    let moved = temp.path().join("moved");
+    let outside = temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    let service = NativeService::new(Some(root.clone()));
+    service.set_downloader(Arc::new(Swap { root, moved: moved.clone(), outside: outside.clone() }));
+    let _lease = service.begin().unwrap();
+    let artifact = crate::ModelArtifact {
+        id: "fixture",
+        file_name: "input.safetensors",
+        bytes: FIXTURE.bytes,
+        sha256: FIXTURE.sha256,
+        url: FIXTURE.url,
+        license: "MIT",
+        license_url: FIXTURE.url,
+        source: FIXTURE.source,
+    };
+    assert!(osor_install::install_recipe(&service, &[artifact], &NoopControl, |_, _, _| panic!("replaced store must fail before conversion")).is_err());
+    assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(moved).unwrap().count(), 0, "owned staging must clean through the original held store");
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_managed_receipt_cannot_authorize_removing_external_source_weights() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("external");
+    osor_receipt_fixture(&source);
+    let root = temp.path().join("models");
+    let service = NativeService::new(Some(root.clone()));
+    let _lease = service.begin().unwrap();
+    osor_reference::import(&service, &source, &NoopControl).unwrap();
+    let path = root.join(osor_reference::RECEIPT);
+    let mut receipt: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    receipt["managed"] = serde_json::Value::String(format!("osor-sdxl-{}", "a".repeat(32)));
+    fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+    osor_reference::remove(&service).unwrap();
+    assert!(!path.exists());
+    for name in ["manifest.json", "unet.safetensors", "vae.safetensors", "prompt.safetensors"] {
+        assert!(source.join(name).exists());
+    }
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_managed_import_rejects_valid_bundle_replacement_of_held_preparation() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = temp.path().join("fixture");
+    osor_receipt_fixture(&fixture);
+    let root = temp.path().join("models");
+    let service = NativeService::new(Some(root.clone()));
+    let _lease = service.begin().unwrap();
+    let store = service.directory(true).unwrap();
+    let mut stage = capability::StagedDirectory::create(&store).unwrap();
+    let prepared = prepare_fixture_bundle(&mut stage, &fixture).unwrap();
+    let path = root.join(&stage.name);
+    fs::rename(&path, temp.path().join("moved-preparation")).unwrap();
+    osor_receipt_fixture(&path);
+    let manifest = path.join("manifest.json");
+    let mut replacement: serde_json::Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    replacement["input_sha256"]["base_unet"] = serde_json::Value::String("9".repeat(64));
+    fs::write(manifest, serde_json::to_vec(&replacement).unwrap()).unwrap();
+    assert!(
+        osor_reference::import_managed(&service, &path, &stage.name, &stage.store, &prepared, &NoopControl).is_err(),
+        "a separate valid bundle must not substitute the conversion's held directory"
+    );
+    assert!(!root.join(osor_reference::RECEIPT).exists());
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_managed_import_rejects_manifest_rewrite_after_completed_conversion() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = temp.path().join("fixture");
+    osor_receipt_fixture(&fixture);
+    let root = temp.path().join("models");
+    let service = NativeService::new(Some(root.clone()));
+    let _lease = service.begin().unwrap();
+    let store = service.directory(true).unwrap();
+    let mut stage = capability::StagedDirectory::create(&store).unwrap();
+    let prepared = prepare_fixture_bundle(&mut stage, &fixture).unwrap();
+    let path = root.join(&stage.name);
+    let mut changed = prepared.clone();
+    changed.input_sha256.base_unet = "9".repeat(64);
+    fs::write(path.join("manifest.json"), serde_json::to_vec(&changed).unwrap()).unwrap();
+    stage.ensure_owned().unwrap();
+    assert!(
+        matches!(osor_reference::import_managed(&service, &path, &stage.name, &stage.store, &prepared, &NoopControl), Err(Error::Integrity(reason)) if reason.contains("completed conversion"))
+    );
+    assert!(!root.join(osor_reference::RECEIPT).exists());
 }
 
 #[cfg(feature = "osor")]
@@ -1070,4 +1484,64 @@ fn osor_import_rejects_sparse_oversized_decoded_weights_before_payload_hashing()
         assert_eq!(osor_reference::decoded_header_bytes(&header, 4096).unwrap(), 4096);
         assert!(osor_reference::decoded_header_bytes(&header, 4095).is_err());
     }
+}
+
+/// Real preparation using explicitly supplied pinned local streams. This exercises
+/// download verification and native conversion, not the application HTTPS transport.
+#[cfg(feature = "osor")]
+#[test]
+#[ignore = "requires explicit source cache, fresh managed store, 20 GiB disk headroom and 48 GiB memory budget"]
+fn real_osor_installer_converts_pinned_local_streams_into_managed_bundle() {
+    struct LocalStreams {
+        cache: PathBuf,
+        prompt: PathBuf,
+    }
+    impl ModelDownloader for LocalStreams {
+        fn open(&self, _: &ModelSpec) -> Result<Box<dyn Read + Send>> {
+            Err(Error::Unavailable)
+        }
+        fn open_artifact(&self, artifact: &crate::ModelArtifact) -> Result<Box<dyn Read + Send>> {
+            let path = match artifact.id {
+                "osor-sdxl-base-unet" => self.cache.join("base/unet/diffusion_pytorch_model.fp16.safetensors"),
+                "osor-sdxl-base-vae" => self.cache.join("base/vae/diffusion_pytorch_model.fp16.safetensors"),
+                "osor-sdxl-phase2" => self.cache.join("exported/phase2.safetensors"),
+                "osor-sdxl-fixed-prompt" => self.prompt.clone(),
+                _ => return Err(Error::UnknownModel(artifact.id.into())),
+            };
+            Ok(Box::new(File::open(path)?))
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let root = PathBuf::from(std::env::var_os("PHOTOCRAFT_ML_OSOR_INSTALL_ROOT").expect("supply the fresh owned managed store"));
+    let cache = PathBuf::from(std::env::var_os("PHOTOCRAFT_ML_OSOR_INSTALL_CACHE").expect("supply the pinned input cache"));
+    let prompt = PathBuf::from(std::env::var_os("PHOTOCRAFT_ML_OSOR_INSTALL_PROMPT").expect("supply the independently fetched pinned prompt"));
+    assert!(root.is_absolute() && cache.is_absolute() && prompt.is_absolute());
+    assert!(!root.join(osor_reference::RECEIPT).exists(), "use a fresh store to exercise actual preparation");
+    let service = RemovalService::new(Some(root.clone())).with_downloader(Arc::new(LocalStreams { cache, prompt }));
+    let start = std::time::Instant::now();
+    service.install_with_memory_budget("osor-sdxl", 48 * 1024 * 1024 * 1024, &NoopControl).unwrap();
+    let receipt: serde_json::Value = serde_json::from_slice(&fs::read(root.join(osor_reference::RECEIPT)).unwrap()).unwrap();
+    assert!(receipt["managed"].as_str().is_some());
+    let bundle = PathBuf::from(receipt["path"].as_str().unwrap());
+    let manifest: osor_rs::artifact::Manifest = serde_json::from_slice(&fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    let expected = crate::catalog::OSOR_ARTIFACTS;
+    assert_eq!(
+        [
+            manifest.input_sha256.base_unet.as_str(),
+            manifest.input_sha256.base_vae.as_str(),
+            manifest.input_sha256.checkpoint.as_str(),
+            manifest.input_sha256.prompt.as_str()
+        ],
+        expected.iter().map(|artifact| artifact.sha256).collect::<Vec<_>>().as_slice()
+    );
+    for artifact in expected {
+        assert!(!bundle.join(artifact.file_name).exists(), "raw input retained after successful preparation");
+    }
+    assert_eq!(fs::read_to_string(bundle.join(osor_reference::LICENSE_FILE)).unwrap(), crate::OSOR_LICENSE_TEXT);
+    let status = service.status().into_iter().find(|status| status.id == "osor-sdxl").unwrap();
+    assert!(status.installed && status.available && status.verified && !status.busy);
+    println!(
+        "{}",
+        serde_json::json!({"model":"osor-sdxl","input_transport":"explicit pinned local file streams","managed_bundle":bundle,"manifest_sha256":service.model_sha256("osor-sdxl").unwrap(),"preparation_seconds":start.elapsed().as_secs_f64()})
+    );
 }

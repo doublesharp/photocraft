@@ -2,7 +2,7 @@
 //! No work happens at startup: resolving a directory and creating an HTTP agent download
 //! nothing. Only explicit engine model-management commands open a connection.
 
-use photocraft_ml::{Error, ModelDownloader, ModelSpec, RemovalService};
+use photocraft_ml::{Error, ModelArtifact, ModelDownloader, ModelSpec, RemovalService};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +19,7 @@ pub fn model_dir() -> Option<PathBuf> {
 
 pub fn configure(session: &mut photocraft_engine::Session) {
     let service = RemovalService::new(model_dir()).with_downloader(Arc::new(HttpsModels::new()));
-    #[cfg(all(feature = "osor-metal", target_os = "macos"))]
+    #[cfg(all(feature = "osor", target_os = "macos"))]
     let service = service.with_osor_backend(photocraft_ml::OsorBackend::Metal { ordinal: 0 });
     session.set_removal_service(Arc::new(service));
 }
@@ -34,7 +34,7 @@ impl HttpsModels {
             .https_only(true)
             .max_redirects(5)
             .user_agent("Photocraft-dev")
-            .timeout_global(Some(Duration::from_secs(600)))
+            .timeout_global(Some(Duration::from_secs(3600)))
             .timeout_resolve(Some(Duration::from_secs(10)))
             .timeout_connect(Some(Duration::from_secs(10)))
             .timeout_per_read(Some(Duration::from_secs(10)))
@@ -54,10 +54,32 @@ impl ModelDownloader for HttpsModels {
         {
             return Err(Error::Download("the model source is not in the verified catalog".into()));
         }
-        let response = self.agent.get(model.url).header("Accept-Encoding", "identity").call().map_err(|e| Error::Download(e.to_string()))?;
+        self.open_pinned(model.url, model.bytes)
+    }
+
+    fn open_artifact(&self, artifact: &ModelArtifact) -> photocraft_ml::Result<Box<dyn std::io::Read + Send>> {
+        let pinned = photocraft_ml::model_artifact(artifact.id)?;
+        if artifact.file_name != pinned.file_name
+            || artifact.bytes != pinned.bytes
+            || artifact.sha256 != pinned.sha256
+            || artifact.url != pinned.url
+            || artifact.license != pinned.license
+            || artifact.license_url != pinned.license_url
+            || artifact.source != pinned.source
+            || !artifact.url.starts_with("https://huggingface.co/")
+        {
+            return Err(Error::Download("the model artifact is not in the verified catalog".into()));
+        }
+        self.open_pinned(pinned.url, pinned.bytes)
+    }
+}
+
+impl HttpsModels {
+    fn open_pinned(&self, url: &str, expected_bytes: u64) -> photocraft_ml::Result<Box<dyn std::io::Read + Send>> {
+        let response = self.agent.get(url).header("Accept-Encoding", "identity").call().map_err(|e| Error::Download(e.to_string()))?;
         if let Some(length) = response.headers().get("content-length") {
             let bytes = length.to_str().ok().and_then(|value| value.parse::<u64>().ok());
-            if bytes != Some(model.bytes) {
+            if bytes != Some(expected_bytes) {
                 return Err(Error::Download("the server returned an unexpected model size".into()));
             }
         }
@@ -76,6 +98,41 @@ mod tests {
         assert!(config.https_only());
         assert_eq!(config.max_redirects(), 5);
         assert_eq!(config.timeout_per_read(), Some(Duration::from_secs(10)));
+    }
+    #[test]
+    fn model_transport_refuses_uncatalogued_artifact_before_network() {
+        let mut artifact = photocraft_ml::model_artifact("osor-sdxl-fixed-prompt").unwrap().clone();
+        artifact.url = "https://example.invalid/substituted.safetensors";
+        let error = HttpsModels::new().open_artifact(&artifact).err().unwrap().to_string();
+        assert!(error.contains("verified catalog"), "{error}");
+    }
+    #[test]
+    fn model_transport_refuses_substituted_artifact_identity_before_network() {
+        let client = HttpsModels::new();
+        let pinned = photocraft_ml::model_artifact("osor-sdxl-fixed-prompt").unwrap();
+        for variant in 0..4 {
+            let mut artifact = pinned.clone();
+            match variant {
+                0 => artifact.bytes += 1,
+                1 => artifact.sha256 = "00",
+                2 => artifact.file_name = "other.safetensors",
+                _ => artifact.license_url = "https://example.invalid/terms",
+            }
+            let error = client.open_artifact(&artifact).err().unwrap().to_string();
+            assert!(error.contains("verified catalog"), "{error}");
+        }
+    }
+    #[test]
+    #[ignore = "explicit HTTPS qualification; requires PHOTOCRAFT_TEST_PROMPT_PATH with the independently hash-verified catalog prompt"]
+    fn real_https_model_artifact_matches_verified_local_prompt() {
+        use std::io::Read;
+        let expected = std::fs::read(std::env::var_os("PHOTOCRAFT_TEST_PROMPT_PATH").expect("set the verified prompt path")).unwrap();
+        let artifact = photocraft_ml::model_artifact("osor-sdxl-fixed-prompt").unwrap();
+        assert_eq!(expected.len() as u64, artifact.bytes);
+        let stream = HttpsModels::new().open_artifact(artifact).unwrap();
+        let mut actual = Vec::new();
+        stream.take(artifact.bytes + 1).read_to_end(&mut actual).unwrap();
+        assert_eq!(actual, expected, "HTTPS transport must return the independently verified pinned bytes");
     }
     #[test]
     fn model_transport_refuses_uncatalogued_source_before_network() {

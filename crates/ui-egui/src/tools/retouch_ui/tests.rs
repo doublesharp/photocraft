@@ -877,7 +877,7 @@ fn queued_remove_freezes_method_sampling_and_model_preferences() {
         app.ui.tool_options.remove_after_each_stroke = false;
         remove_pending_add(&mut app, &[[12.0, 10.0, 1.0], [16.0, 12.0, 1.0]]);
         match change {
-            "method" => app.ui.tool_options.remove_method = "auto".into(),
+            "method" => app.ui.tool_options.remove_method = "classical".into(),
             "sampling" => app.ui.tool_options.sample_all.remove = true,
             "after" => app.ui.tool_options.remove_after_each_stroke = true,
             "selected model" => {
@@ -912,7 +912,7 @@ fn remove_gesture_does_not_retarget_when_source_or_settings_change_before_releas
                 app.run("paint.pencil", json!({"points":[[80,40]],"size":2,"color":"#ff0000"})).unwrap();
             }
             "output" => app.ui.tool_options.remove_new_layer = true,
-            "method" => app.ui.tool_options.remove_method = "auto".into(),
+            "method" => app.ui.tool_options.remove_method = "classical".into(),
             "processing" => {
                 app.run("prefs.set", json!({"path":"generativeRemove.enabled", "value":true})).unwrap();
             }
@@ -1310,4 +1310,65 @@ fn osor_preview_canvas_and_apply_use_the_same_candidate() {
     );
     app.run("edit.undo", json!({})).unwrap();
     assert_eq!(photocraft_compose::render(&source, source.bounds()).px, photocraft_compose::render(&app.session.active().unwrap().doc, source.bounds()).px);
+}
+
+#[test]
+fn hybrid_first_use_offers_recommended_models_without_downloading() {
+    let root = std::env::temp_dir().join("photocraft-hybrid-ui-no-models");
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1100., 800.)).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = app();
+        app.session.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::new(Some(root.clone()))));
+        app.ui.tool = Tool::Remove;
+        app
+    });
+    h.run_steps(4);
+    let setup = h.state().ui.dialogs.iter().find(|d| d.fields.get("__prefsui").and_then(Value::as_str) == Some("removeSetup"));
+    assert!(setup.is_some(), "first native Remove use must explain model choices");
+    assert_eq!(setup.unwrap().fields["workflow"], "recommended");
+    assert!(!h.state().session.has_jobs(), "offering choices never downloads weights");
+}
+
+#[test]
+fn hybrid_declined_setup_does_not_prompt_again() {
+    let root = std::env::temp_dir().join("photocraft-hybrid-ui-declined");
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1100., 800.)).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = app();
+        app.session.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::new(Some(root.clone()))));
+        app.run("remove.setup", json!({"workflow":"classical"})).unwrap();
+        app.ui.tool = Tool::Remove;
+        app
+    });
+    h.run_steps(4);
+    assert!(!h.state().ui.dialogs.iter().any(|d| d.fields.get("__prefsui").and_then(Value::as_str) == Some("removeSetup")));
+    assert!(!h.state().session.has_jobs());
+}
+
+#[test]
+fn hybrid_queued_strokes_keep_distinct_repair_hints() {
+    let mut app = app();
+    app.ui.tool = Tool::Remove;
+    app.ui.tool_options.remove_after_each_stroke = false;
+    app.ui.tool_options.remove_repair_type = "detail".into();
+    remove_pending_add(&mut app, &[[10.0, 10.0, 1.0], [30.0, 10.0, 1.0]]);
+    app.ui.tool_options.remove_repair_type = "object".into();
+    assert!(remove_pending_live(&mut app), "a new hint must not discard the previous region");
+    remove_pending_add(&mut app, &[[70.0, 40.0, 1.0]]);
+    assert_eq!(app.remove_pending.len(), 2);
+    assert_eq!(app.remove_pending[0]["repairType"], "detail");
+    assert_eq!(app.remove_pending[1]["repairType"], "object");
+}
+
+#[test]
+fn hybrid_gesture_does_not_retarget_if_repair_hint_changes_while_pressed() {
+    let mut app = app();
+    app.ui.tool = Tool::Remove;
+    let modifiers = egui::Modifiers::NONE;
+    tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 30.0, pressure: 1.0 }, modifiers);
+    app.ui.tool_options.remove_repair_type = "object".into();
+    tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 30.0 }, modifiers);
+    assert!(app.ui.status_error);
+    assert!(app.ui.status.contains("cancelled"), "{}", app.ui.status);
+    assert!(!app.session.has_jobs());
 }

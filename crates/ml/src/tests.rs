@@ -85,7 +85,9 @@ fn osor_catalog_is_discoverable_without_enabling_its_runtime() {
     let service = RemovalService::default();
     let model = service.catalog().iter().find(|model| model.id == "osor-sdxl").expect("OSOR must stay discoverable");
     assert!(model.memory_mib >= 16 * 1024);
-    assert!(model.url.is_empty(), "OSOR weights must be an explicit local import");
+    assert!(model.url.is_empty(), "multi-file preparation must not use the single-file transport");
+    assert_eq!(model.artifacts.len(), 4);
+    assert_eq!(model.download_bytes, model.artifacts.iter().map(|artifact| artifact.bytes).sum::<u64>());
     let status = service.status().into_iter().find(|status| status.id == model.id).unwrap();
     assert!(!status.installed);
     assert!(!status.available);
@@ -99,6 +101,6 @@ fn model_runtime_availability_is_specific_to_the_catalog_adapter() {
     assert!(!service.model_runtime_available("not-a-model"));
     assert_eq!(service.model_runtime_available("lama"), cfg!(all(not(target_arch = "wasm32"), feature = "native-inference")));
     assert_eq!(service.model_runtime_available("osor-sdxl"), cfg!(all(not(target_arch = "wasm32"), feature = "osor")));
-    #[cfg(all(not(target_arch = "wasm32"), feature = "osor", not(feature = "osor-metal")))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "osor", not(any(feature = "osor-metal", target_os = "macos"))))]
     assert!(!service.with_osor_backend(OsorBackend::Metal { ordinal: 0 }).model_runtime_available("osor-sdxl"));
 }
