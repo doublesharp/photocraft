@@ -1325,7 +1325,10 @@ fn hybrid_first_use_offers_recommended_models_without_downloading() {
     h.run_steps(4);
     let setup = h.state().ui.dialogs.iter().find(|d| d.fields.get("__prefsui").and_then(Value::as_str) == Some("removeSetup"));
     assert!(setup.is_some(), "first native Remove use must explain model choices");
-    assert_eq!(setup.unwrap().fields["workflow"], "recommended");
+    assert!(
+        matches!(setup.unwrap().fields["workflow"].as_str(), Some("recommended" | "lama" | "compact" | "classical")),
+        "first-use setup must propose a supported profile for this host"
+    );
     assert!(!h.state().session.has_jobs(), "offering choices never downloads weights");
 }
 

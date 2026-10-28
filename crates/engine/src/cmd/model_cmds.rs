@@ -194,16 +194,18 @@ fn manage(s: &mut Session, p: &Value, cmd: &'static str) -> Result<Value> {
         None
     };
     let service = s.removal_service();
+    let name = service.catalog().iter().find(|model| model.id == id).map_or(id.as_str(), |model| model.label);
     let label = match cmd {
-        "ai.models.install" => "Download model",
-        "ai.models.import" => "Import model",
-        _ => "Remove model",
+        "ai.models.install" if id == "osor-sdxl" => format!("Download and prepare {name}"),
+        "ai.models.install" => format!("Download {name}"),
+        "ai.models.import" => format!("Import {name}"),
+        _ => format!("Remove {name}"),
     };
     let budget_bytes = u64::from(s.prefs().performance.memory_usage_mb).saturating_mul(1024 * 1024);
     let result_id = id.clone();
     crate::jobs::run(
         s,
-        label,
+        &label,
         false,
         move |ctx| {
             ctx.check()?;
@@ -277,6 +279,21 @@ mod tests {
         let untrusted = s.execute("ai.models.list", json!({})).unwrap();
         assert_eq!(untrusted["managementAvailable"], false);
         assert!(s.execute("ai.models.remove", json!({"modelId":"lama"})).is_err());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn model_download_job_names_its_model_for_reopened_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::new();
+        s.set_removal_service(Arc::new(
+            photocraft_ml::RemovalService::new(Some(dir.path().into())).with_downloader(Arc::new(CountingDownloader(AtomicUsize::new(0)))),
+        ));
+        let crate::jobs::Started::Job(job) = s.start("ai.models.install", json!({"modelId":"lama"})).unwrap() else {
+            panic!("model transfer should start a background job");
+        };
+        assert_eq!(s.job(job).unwrap().label, "Download LaMa");
+        assert!(s.wait_job(job).is_err(), "the empty fixture stream cannot publish a model");
     }
 
     #[test]
