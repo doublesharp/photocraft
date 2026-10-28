@@ -2180,10 +2180,12 @@ mod multi_layer_formatting {
         let before = ids.map(|id| style(&app, id, 0));
         let mut h = controls(app, false);
         h.get_all_by_role(Role::ComboBox).next().unwrap().click();
-        h.run();
+        // The search caret keeps repainting while the font menu is open. Wait for its input
+        // passes, rather than requiring the live popup to settle within an idle-frame limit.
+        h.run_steps(4);
         h.get_by_role(Role::TextInput).type_text("JetBrains");
         h.key_press(egui::Key::ArrowDown);
-        h.run();
+        h.run_steps(4);
         h.key_press(egui::Key::Enter);
         h.run();
         for i in 0..2 {
