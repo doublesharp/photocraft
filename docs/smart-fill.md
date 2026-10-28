@@ -46,3 +46,23 @@ mode. The shared model-management commands remain explicit setup actions.
 LaMa fills from image context. Prompted Generative Fill/Expand, broad visual-quality
 qualification, other native platforms and learned browser execution remain
 separate work.
+
+## Qualification
+
+On 2026-10-28, the independent Smart Fill branch passed 12 focused engine and
+12 UI tests. These cover output choices and RGB depths, fractional coverage,
+source transparency locks, preview ownership, cancellation/drain, unsupported
+contexts, memory refusal and Apply/OK lifecycle.
+
+An aggregate macOS development build used the existing LaMa weights and an
+8 GiB configured allowance on a procedural 256×192 document. Preview and
+unrelated preferences/overlay changes preserved the source and candidate; Apply
+used that candidate once, OK after Apply added no fill, and Undo restored the
+exact saved PNG. Warm reopening did not reload LaMa. In-flight cancellation
+drained admission, preserved the source and allowed another fill. Classical
+controls and the shared Models manager were also exercised. Native-resolution
+images at 1280×900 and 1000×700 were inspected with all controls visible.
+
+These checks used retained weights and a private profile. They do not establish
+fresh-install download/preparation, broad image quality, other native platforms,
+signed packaging or full-size performance budgets.
