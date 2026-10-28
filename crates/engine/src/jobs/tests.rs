@@ -782,3 +782,62 @@ fn every_job_terminal_path_drops_a_live_commit_stroke() {
         assert!(s.live_commit.is_none(), "terminal path {outcome} retained the preview");
     }
 }
+
+#[test]
+fn cancellation_cannot_report_success_after_an_external_commit_has_begun() {
+    use std::sync::mpsc;
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut s = Session::new();
+    let id = job(s
+        .start_job(
+            "test.commit",
+            json!({}),
+            "Commit",
+            false,
+            move |ctx| {
+                photocraft_ml::RemovalControl::begin_irreversible(ctx).map_err(|_| EngineError::Cancelled)?;
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            },
+            |_, ()| Ok(json!({"committed":true})),
+        )
+        .unwrap());
+    entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(!s.cancel_job(id), "a committed operation cannot be reported cancelled");
+    release_tx.send(()).unwrap();
+    assert_eq!(s.wait_job(id).unwrap()["committed"], true);
+}
+
+#[test]
+fn inline_job_cancellation_after_work_discards_the_result_before_apply() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut s = Session::new();
+    let ctx = JobCtx::new();
+    s.jobs.inline = Some(ctx);
+    let applied = Arc::new(AtomicBool::new(false));
+    let written = applied.clone();
+    let result = run(
+        &mut s,
+        "late cancellation",
+        false,
+        |ctx| {
+            ctx.cancel();
+            Ok(())
+        },
+        move |_, ()| {
+            written.store(true, Ordering::SeqCst);
+            Ok(json!({}))
+        },
+    );
+    assert!(matches!(result, Err(EngineError::Cancelled)));
+    assert!(!applied.load(Ordering::SeqCst));
+}
+
+#[test]
+fn a_cancelled_model_job_cannot_enter_the_publish_gate() {
+    let ctx = JobCtx::new();
+    ctx.cancel();
+    assert!(matches!(photocraft_ml::RemovalControl::begin_irreversible(&ctx), Err(photocraft_ml::Error::Cancelled)));
+}

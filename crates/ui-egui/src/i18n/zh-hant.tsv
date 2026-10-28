@@ -3124,3 +3124,44 @@ curves	Smooth	平滑
 	Font size presets	字體大小預設
 	Leading presets	行距預設
 	Tracking presets	字距調整預設
+
+# Local Remove model manager
+	Generative Remove Models…	生成式移除模型…
+	Generative Remove Models	生成式移除模型
+	Method:	方法:
+	Classical	傳統
+	Models…	模型…
+	Enable local AI removal	啟用本機 AI 移除
+	In use	使用中
+	Installed	已安裝
+	Not installed	未安裝
+	Enable this process	啟用此處理
+	Selected model	選取的模型
+	Model source and license	模型來源與授權
+	Model download source	模型下載來源
+	Download	下載
+	Install from file…	從檔案安裝…
+	Remove model	移除模型
+	Cancel model operation	取消模型作業
+	Model installation cancelled	已取消模型安裝
+	Model removed	已移除模型
+	Model installed and verified	模型已安裝並驗證
+	Local AI inference is unavailable in this build. Classical Remove remains available.	此版本無法使用本機 AI 推論。仍可使用傳統移除。
+	Model installation is unavailable in this session.	此工作階段無法安裝模型。
+	Choose which local models may process your images. A brush stroke never downloads a model.	選擇可處理影像的本機模型。筆刷筆畫不會下載模型。
+	Settings take effect immediately. Downloads continue while this window is closed.	設定立即生效。關閉此視窗後下載仍會繼續。
+	The model operation continues while this window is closed.	關閉此視窗後模型作業仍會繼續。
+	Choose a model file to install.	選擇要安裝的模型檔案。
+	Settings take effect immediately.	設定立即生效。
+	No model file was selected	未選擇模型檔案
+	Local model installation requires a desktop file path	安裝本機模型需要桌面檔案路徑
+	Remove is processing. Wait for it to finish or cancel the operation.	正在移除。請等待完成或取消作業。
+	Remove was cancelled because its source or settings changed.	來源內容或設定已變更，移除已取消。
+	model is not installed	模型尚未安裝
+	native AI inference is unavailable in this build	此版本無法使用原生 AI 推論
+	model storage is unavailable	模型儲存空間無法使用
+	AI removal is unavailable in the browser	瀏覽器中無法使用 AI 移除
+	Local background reconstruction; 512 px context, CPU processing	本機背景重建；512 像素周邊範圍，CPU 處理
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	精簡的本機重建；舊版 MI-GAN 流程，512 像素周邊範圍，CPU 處理
+	local AI processing is disabled	本機 AI 處理已停用
+	the selected model is not yet qualified for Automatic Remove	所選模型尚未達到自動移除的要求

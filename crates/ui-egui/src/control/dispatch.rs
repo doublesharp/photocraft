@@ -264,6 +264,10 @@ struct ToolSet {
     gradient_blend: Option<photocraft_color::BlendMode>,
     shape_stroke: Option<Option<photocraft_doc::ShapeStroke>>,
     tool: Option<Tool>,
+    remove_method: Option<String>,
+    remove_sample_all: Option<bool>,
+    remove_new_layer: Option<bool>,
+    remove_after_each: Option<bool>,
     gradient_classic: Option<bool>,
     stroke_trace: Option<&'static str>,
     eyedropper_size: Option<u32>,
@@ -280,6 +284,18 @@ impl ToolSet {
             gradient_blend: gradient_blend_param(p)?,
             shape_stroke: shape_stroke_param(app, p)?,
             tool: tool_param(p)?,
+            remove_method: p
+                .get("removeMethod")
+                .map(|v| {
+                    v.as_str()
+                        .filter(|v| matches!(*v, "classical" | "auto" | "ai"))
+                        .map(str::to_owned)
+                        .ok_or_else(|| "removeMethod must be classical, auto, or ai".to_string())
+                })
+                .transpose()?,
+            remove_sample_all: bool_field(p, "removeSampleAllLayers")?,
+            remove_new_layer: bool_field(p, "removeNewLayer")?,
+            remove_after_each: bool_field(p, "removeAfterEachStroke")?,
             gradient_classic: bool_field(p, "gradientClassic")?,
             stroke_trace: stroke_trace_param(p)?,
             // The Eyedropper's options bar (#1649): Sample Size, Sample, Show Sampling Ring.
@@ -309,6 +325,7 @@ impl ToolSet {
             // sets the new tool's size.
             crate::paint_mouse::sync_tool_brush(app);
         }
+        self.apply_remove(app);
         self.apply_gradient_and_trace(app);
         if let Some(size) = self.eyedropper_size {
             app.ui.tool_options.eyedropper_size = size;
@@ -327,6 +344,21 @@ impl ToolSet {
         }
         if let Some(f) = self.layer_filter {
             crate::layer_filter_ui::apply(&mut app.ui, f);
+        }
+    }
+
+    fn apply_remove(&self, app: &mut PhotocraftApp) {
+        if let Some(method) = &self.remove_method {
+            app.ui.tool_options.remove_method = method.clone();
+        }
+        if let Some(sample) = self.remove_sample_all {
+            app.ui.tool_options.sample_all.remove = sample;
+        }
+        if let Some(new_layer) = self.remove_new_layer {
+            app.ui.tool_options.remove_new_layer = new_layer;
+        }
+        if let Some(after_each) = self.remove_after_each {
+            app.ui.tool_options.remove_after_each_stroke = after_each;
         }
     }
 

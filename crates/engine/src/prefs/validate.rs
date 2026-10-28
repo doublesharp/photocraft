@@ -217,6 +217,33 @@ pub(super) fn set_path(root: &mut Value, path: &str, value: Value) -> std::resul
 
 /// Validate one value for `path` before it is stored (choices, ranges, colours).
 pub(super) fn check_value(path: &str, v: &Value) -> std::result::Result<(), String> {
+    let known_model = |id: &str| photocraft_ml::RemovalService::default().catalog().iter().any(|model| model.id == id);
+    if path == "generativeRemove.selectedModel" {
+        let id = v.as_str().ok_or("`generativeRemove.selectedModel` must be a model id")?;
+        if id.len() > 64 || !known_model(id) {
+            return Err("unknown removal model".into());
+        }
+    }
+    if path == "generativeRemove.enabledModels" {
+        let models = v.as_array().ok_or("`generativeRemove.enabledModels` must be a list of model ids")?;
+        if models.len() > photocraft_ml::RemovalService::default().catalog().len() {
+            return Err("too many enabled removal models".into());
+        }
+        let mut seen = Vec::new();
+        for model in models {
+            let id = model.as_str().filter(|id| known_model(id)).ok_or("unknown removal model")?;
+            if seen.contains(&id) {
+                return Err(format!("duplicate removal model `{id}`"));
+            }
+            seen.push(id);
+        }
+    }
+    if path == "generativeRemove" {
+        let section = v.as_object().ok_or("`generativeRemove` must be an object")?;
+        for (key, value) in section {
+            check_value(&format!("generativeRemove.{key}"), value)?;
+        }
+    }
     if path == "interface.favoriteThemes" {
         let items = v.as_array().ok_or("`interface.favoriteThemes` must be a list of theme ids")?;
         if items.len() > Theme::NAMES.len() {

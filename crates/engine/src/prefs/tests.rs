@@ -1033,3 +1033,15 @@ fn a_wrongly_typed_section_or_colour_setting_resets_only_that_part() {
     assert!(s.load_prefs_json(&deep).is_ok());
     assert!(s.load_prefs_json(r#"{"interface": {"theme": 3, "uiScale": [1]}, "workspaces": {"x": 1}, "menus": 1}"#).is_ok());
 }
+
+#[test]
+fn generative_remove_defaults_are_explicitly_opt_in_and_persist() {
+    let mut s = Session::new();
+    let r = s.execute("prefs.get", json!({"path":"generativeRemove"})).unwrap();
+    assert_eq!(r, json!({"enabled":false,"enabledModels":["lama"],"selectedModel":"lama"}));
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabled", "value":true})).unwrap();
+    let saved = s.prefs_to_json();
+    let mut restored = Session::new();
+    restored.load_prefs_json(&saved).unwrap();
+    assert_eq!(restored.execute("prefs.get", json!({"path":"generativeRemove.enabled"})).unwrap(), true);
+}

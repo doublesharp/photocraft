@@ -4105,3 +4105,34 @@ curves	Smooth	Wygładź
 	Font size presets	Ustawienia wstępne rozmiaru czcionki
 	Leading presets	Ustawienia wstępne interlinii
 	Tracking presets	Ustawienia wstępne światła
+
+# Local Remove model manager
+	Generative Remove Models…	Modele usuwania generatywnego…
+	Generative Remove Models	Modele usuwania generatywnego
+	Method:	Metoda:
+	Classical	Klasyczna
+	Models…	Modele…
+	Enable local AI removal	Włącz lokalne usuwanie AI
+	In use	W użyciu
+	Installed	Zainstalowany
+	Not installed	Niezainstalowany
+	Enable this process	Włącz ten proces
+	Selected model	Wybrany model
+	Model source and license	Źródło i licencja modelu
+	Model download source	Źródło pobierania modelu
+	Download	Pobierz
+	Install from file…	Zainstaluj z pliku…
+	Remove model	Usuń model
+	Cancel model operation	Anuluj operację modelu
+	Model installation cancelled	Anulowano instalację modelu
+	Model removed	Usunięto model
+	Model installed and verified	Zainstalowano i zweryfikowano model
+	local AI processing is disabled	lokalne przetwarzanie AI jest wyłączone
+	the selected model is not yet qualified for Automatic Remove	wybrany model nie został jeszcze zakwalifikowany do automatycznego usuwania
+	Choose which local models may process your images. A brush stroke never downloads a model.	Wybierz lokalne modele do przetwarzania obrazów. Pociągnięcie pędzlem nigdy nie pobiera modelu.
+	Local AI inference is unavailable in this build. Classical Remove remains available.	Lokalne wnioskowanie AI jest niedostępne w tej wersji. Klasyczne usuwanie pozostaje dostępne.
+	Model installation is unavailable in this session.	Instalowanie modeli jest niedostępne w tej sesji.
+	Settings take effect immediately. Downloads continue while this window is closed.	Ustawienia działają od razu. Pobieranie trwa po zamknięciu tego okna.
+	Settings take effect immediately.	Ustawienia działają od razu.
+	Local background reconstruction; 512 px context, CPU processing	Lokalna rekonstrukcja tła; kontekst 512 px, przetwarzanie CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Kompaktowa lokalna rekonstrukcja; starszy proces MI-GAN, kontekst 512 px na CPU

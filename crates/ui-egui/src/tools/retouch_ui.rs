@@ -123,16 +123,37 @@ pub(crate) fn stroke_seed(points: &[[f64; 3]]) -> u64 {
 
 /// Finish a stroke with a retouching tool. Returns false if `tool` isn't one.
 pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], mods: egui::Modifiers) -> bool {
+    finish_stroke_with_brush(app, tool, points, mods, None)
+}
+
+pub(crate) fn finish_stroke_with_brush(
+    app: &mut PhotocraftApp,
+    tool: Tool,
+    points: &[[f64; 3]],
+    mods: egui::Modifiers,
+    remove_brush: Option<&photocraft_paint::BrushSettings>,
+) -> bool {
     let o = app.ui.tool_options.clone();
     let pts = json!(points);
     let (cmd, mut p): (&str, Value) = match tool {
         Tool::SpotHealing => ("paint.spotHealing", json!({"type": o.spot_type, "sampleAllLayers": o.sample_all.spot_healing})),
         Tool::Remove => {
+            let base = remove_brush.unwrap_or(&app.session.tools.brush).clone();
             if !o.remove_after_each_stroke {
-                remove_pending_add(app, points);
+                remove_pending_add_with_brush(app, points, &base);
                 return true;
             }
-            ("paint.remove", remove_params(&o))
+            let mut params = remove_params(&o);
+            let brush = photocraft_engine::retouch_cmds::stroke_brush(&base, &params);
+            match photocraft_engine::retouch_cmds::remove_brush_snapshot(&brush) {
+                Ok(snapshot) => params["brush"] = snapshot,
+                Err(error) => {
+                    app.ui.status = error.to_string();
+                    app.ui.status_error = true;
+                    return true;
+                }
+            }
+            ("paint.remove", params)
         }
         Tool::MixerBrush => ("paint.mixerBrush", json!({})),
         Tool::ColorReplacement => ("paint.colorReplacement", color_replacement_params(app)),
@@ -197,32 +218,85 @@ pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], m
     true
 }
 
+/// Publish the effective method, including an Automatic fallback, after an inline or background
+/// Remove. Pending jobs have no effective method yet and are reported when their worker finishes.
+pub(crate) fn report_remove_result(app: &mut PhotocraftApp, result: &Value) -> bool {
+    let Some(method) = result.get("effectiveMethod").and_then(Value::as_str) else { return false };
+    let label = match method {
+        "ai" => tl!("AI"),
+        "classical" => tl!("Classical"),
+        _ => return false,
+    };
+    let model = result.get("modelId").and_then(Value::as_str);
+    let fallback = result.get("fallbackReason").and_then(Value::as_str);
+    app.remove_last_result = Some(json!({"effectiveMethod": method, "modelId": model, "fallbackReason": fallback}));
+    app.ui.status = if let Some(reason) = fallback {
+        format!("{label}: {}", tl!(reason))
+    } else if let Some(id) = model {
+        format!("{label}: {id}")
+    } else {
+        label.to_string()
+    };
+    app.ui.status_error = false;
+    true
+}
+
 /// `paint.remove` params from the options bar (without the strokes).
 fn remove_params(o: &crate::state::ToolOptions) -> Value {
-    json!({"sampleAllLayers": o.sample_all.remove, "newLayer": o.remove_new_layer})
+    json!({"sampleAllLayers": o.sample_all.remove, "newLayer": o.remove_new_layer, "method": o.remove_method})
 }
 
 /// The selection a queued Remove stroke was drawn against. A later selection must not
 /// redirect the queued strokes to a different layer or colour component.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RemoveTarget {
     doc: photocraft_doc::DocId,
+    active_generation: u64,
+    context_generation: u64,
+    revision: u64,
+    options: Value,
+    processing: photocraft_engine::prefs::GenerativeRemove,
+    after_each_stroke: bool,
     layer: Option<photocraft_doc::LayerId>,
     channel: photocraft_engine::channel_cmds::ChannelTarget,
     paint: Value,
 }
 
-fn remove_target(app: &PhotocraftApp) -> Option<RemoveTarget> {
+pub(crate) fn remove_target(app: &PhotocraftApp) -> Option<RemoveTarget> {
     let st = app.session.active()?;
-    Some(RemoveTarget { doc: st.doc.id, layer: st.active_layer, channel: st.channel_view.target, paint: crate::canvas::paint_target(app) })
+    Some(RemoveTarget {
+        doc: st.doc.id,
+        active_generation: app.session.active_generation(),
+        context_generation: app.session.remove_context_generation(),
+        revision: st.revision,
+        options: remove_params(&app.ui.tool_options),
+        processing: app.session.prefs().generative_remove.clone(),
+        after_each_stroke: app.ui.tool_options.remove_after_each_stroke,
+        layer: st.active_layer,
+        channel: st.channel_view.target,
+        paint: crate::canvas::paint_target(app),
+    })
 }
 
 /// Remove after each stroke off: a finished stroke waits with the others, tinted on the canvas,
 /// until ↩ or the options bar's ✓ applies them all as one removal (Esc or ⊘ drops them).
 pub fn remove_pending_add(app: &mut PhotocraftApp, points: &[[f64; 3]]) {
+    let brush = app.session.tools.brush.clone();
+    remove_pending_add_with_brush(app, points, &brush);
+}
+
+fn remove_pending_add_with_brush(app: &mut PhotocraftApp, points: &[[f64; 3]], b: &photocraft_paint::BrushSettings) {
+    if app.session.active_job().is_some() {
+        return;
+    }
     let Some(target) = remove_target(app) else { return };
     let Some(st) = app.session.active() else { return };
     let size = [st.doc.size.width, st.doc.size.height];
+    if let Err(error) = photocraft_engine::retouch_cmds::check_remove_stroke(b, points) {
+        app.ui.status = error.to_string();
+        app.ui.status_error = true;
+        return;
+    }
     if app.remove_pending_target.as_ref() != Some(&target) {
         app.remove_pending.clear();
         app.remove_trail = None;
@@ -230,10 +304,17 @@ pub fn remove_pending_add(app: &mut PhotocraftApp, points: &[[f64; 3]]) {
     }
     // The brush it was drawn with goes with it: the tint shows it, the removal uses it, however
     // the brush changes before ↩.
-    let b = &app.session.tools.brush;
-    let entry = json!({"points": points, "size": b.size, "hardness": b.hardness * 100.0, "spacing": b.spacing * 100.0});
-    let brush = || photocraft_engine::retouch_cmds::stroke_brush(&app.session.tools.brush, &entry);
-    app.remove_trail.get_or_insert_with(|| crate::stroke_trail::Trail::new(size)).feed_stroke_reach(points, brush);
+    let mut entry = json!({"points": points, "size": b.size, "hardness": b.hardness * 100.0, "spacing": b.spacing * 100.0});
+    let brush = photocraft_engine::retouch_cmds::stroke_brush(b, &entry);
+    match photocraft_engine::retouch_cmds::remove_brush_snapshot(&brush) {
+        Ok(snapshot) => entry["brush"] = snapshot,
+        Err(error) => {
+            app.ui.status = error.to_string();
+            app.ui.status_error = true;
+            return;
+        }
+    }
+    app.remove_trail.get_or_insert_with(|| crate::stroke_trail::Trail::new(size)).feed_stroke_reach(points, || brush);
     app.remove_pending.push(entry);
     app.ui.status = crate::i18n::fmt(tl!("Strokes to remove: {n} (Enter applies, Esc cancels)"), &[("n", &app.remove_pending.len().to_string())]);
     app.ui.status_error = false;
@@ -241,20 +322,28 @@ pub fn remove_pending_add(app: &mut PhotocraftApp, points: &[[f64; 3]]) {
 
 /// Apply the waiting strokes as one removal (one job, one undo step). False when none wait.
 pub fn remove_pending_commit(app: &mut PhotocraftApp) -> bool {
+    if app.session.active_job().is_some() || app.drag.as_ref().is_some_and(|drag| drag.tool == Tool::Remove) {
+        return false;
+    }
     // Enter can arrive before the next canvas frame checks pending-stroke lifetime.
     if !remove_pending_live(app) {
         return false;
     }
-    let strokes = std::mem::take(&mut app.remove_pending);
-    app.remove_trail = None;
-    app.remove_pending_target = None;
     let mut p = remove_params(&app.ui.tool_options);
-    p["strokes"] = json!(strokes);
+    p["strokes"] = json!(app.remove_pending);
     p["target"] = crate::canvas::paint_target(app);
     app.ui.status.clear();
-    if let Err(e) = app.run("paint.remove", p) {
-        app.ui.status = e;
-        app.ui.status_error = true;
+    match app.run("paint.remove", p) {
+        Ok(_) => {
+            app.remove_pending.clear();
+            app.remove_trail = None;
+            app.remove_pending_target = None;
+        }
+        Err(error) => {
+            // Preflight failures leave the frozen mask available for an explicit retry.
+            app.ui.status = error;
+            app.ui.status_error = true;
+        }
     }
     true
 }
@@ -517,6 +606,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::checkbox(ui, &mut o.sample_all.spot_healing, tl!("Sample All Layers"));
         }
         Tool::Remove => {
+            opt(ui, tl!("Method:"));
+            let methods = [("classical".into(), tl!("Classical")), ("auto".into(), tl!("Auto")), ("ai".into(), tl!("AI"))];
+            crate::widgets::dropdown(ui, "remove-method", tl!("Method"), &mut o.remove_method, &methods, 95.0);
+            let show_models = ui.button(tl!("Models…")).clicked();
             // Photoshop's options bar: Sample All Layers, Create a new layer, Remove after each
             // stroke; with strokes waiting, ✓ applies them and ⊘ drops them.
             crate::widgets::checkbox(ui, &mut o.sample_all.remove, tl!("Sample All Layers"));
@@ -533,6 +626,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                         remove_pending_cancel(app);
                     }
                 });
+            }
+            if show_models {
+                crate::prefs_ui::open_remove_models(app);
             }
         }
         Tool::Patch => {

@@ -3704,3 +3704,44 @@ curves	Smooth	매끄럽게
 	Font size presets	글꼴 크기 사전 설정
 	Leading presets	행간 사전 설정
 	Tracking presets	자간 사전 설정
+
+# Local Remove model manager
+	Generative Remove Models…	생성형 제거 모델…
+	Generative Remove Models	생성형 제거 모델
+	Method:	방법:
+	Classical	기존 방식
+	Models…	모델…
+	Enable local AI removal	로컬 AI 제거 사용
+	In use	사용 중
+	Installed	설치됨
+	Not installed	설치되지 않음
+	Enable this process	이 처리 사용
+	Selected model	선택한 모델
+	Model source and license	모델 출처 및 라이선스
+	Model download source	모델 다운로드 출처
+	Download	다운로드
+	Install from file…	파일에서 설치…
+	Remove model	모델 제거
+	Cancel model operation	모델 작업 취소
+	Model installation cancelled	모델 설치가 취소됨
+	Model removed	모델이 제거됨
+	Model installed and verified	모델이 설치되고 검증됨
+	Local AI inference is unavailable in this build. Classical Remove remains available.	이 빌드에서는 로컬 AI 추론을 사용할 수 없습니다. 기존 제거 방식은 계속 사용할 수 있습니다.
+	Model installation is unavailable in this session.	이 세션에서는 모델을 설치할 수 없습니다.
+	Choose which local models may process your images. A brush stroke never downloads a model.	이미지를 처리할 수 있는 로컬 모델을 선택하세요. 브러시 획으로 모델을 다운로드하지 않습니다.
+	Settings take effect immediately. Downloads continue while this window is closed.	설정은 즉시 적용됩니다. 이 창을 닫아도 다운로드는 계속됩니다.
+	The model operation continues while this window is closed.	이 창을 닫아도 모델 작업은 계속됩니다.
+	Choose a model file to install.	설치할 모델 파일을 선택하세요.
+	Settings take effect immediately.	설정은 즉시 적용됩니다.
+	No model file was selected	모델 파일을 선택하지 않았습니다
+	Local model installation requires a desktop file path	로컬 모델 설치에는 데스크톱 파일 경로가 필요합니다
+	Remove is processing. Wait for it to finish or cancel the operation.	제거를 처리 중입니다. 완료될 때까지 기다리거나 작업을 취소하세요.
+	Remove was cancelled because its source or settings changed.	원본 또는 설정이 변경되어 제거가 취소되었습니다.
+	model is not installed	모델이 설치되지 않았습니다
+	native AI inference is unavailable in this build	이 빌드에서는 네이티브 AI 추론을 사용할 수 없습니다
+	model storage is unavailable	모델 저장소를 사용할 수 없습니다
+	AI removal is unavailable in the browser	브라우저에서는 AI 제거를 사용할 수 없습니다
+	Local background reconstruction; 512 px context, CPU processing	로컬 배경 재구성, 512px 주변 영역, CPU 처리
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	간결한 로컬 재구성, 이전 MI-GAN 처리 방식, 512px 주변 영역, CPU 처리
+	local AI processing is disabled	로컬 AI 처리가 비활성화되어 있습니다
+	the selected model is not yet qualified for Automatic Remove	선택한 모델은 아직 자동 제거에 적합하다고 검증되지 않았습니다

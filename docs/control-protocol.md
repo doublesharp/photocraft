@@ -8,6 +8,11 @@ Stroke Options applies valid UI edits immediately; `strokeEditor` is the open ed
 not an uncommitted document preview. Escape/outside clicks close it without reverting edits.
 See [Shape stroke options](shape-strokes.md) for limits, preview and persistence behavior.
 
+Remove options are available through `ui.set`: `removeMethod` (`classical|auto|ai`),
+`removeSampleAllLayers`, `removeNewLayer`, and `removeAfterEachStroke` (booleans).
+They do not install models or enable local AI processing; use the explicit preferences and
+model commands described in [Local AI Remove](generative-remove.md).
+
 The desktop app listens on `127.0.0.1:<port>` (loopback only). Start it with a token file so the credential is not exposed in the process command line:
 
 ```sh

@@ -7,6 +7,9 @@ license.workspace = true
 build = "build.rs"
 
 [features]
+default = ["local-ai"]
+# Native Rust CPU inference; weights are optional downloads, never embedded.
+local-ai = ["photocraft-engine/native-inference"]
 # Open HEIC/HEIF photos (the optional photocraft-heif crate). Not default so distributors choose
 # it; official builds (CI, packaging/, release) build with `--features heif`.
 heif = ["photocraft-codecs/heif"]
@@ -23,6 +26,9 @@ name = "photocraft-cli"
 path = "src/main.rs"
 
 [dependencies]
+photocraft-ml = { workspace = true }
+# HTTPS model streams, pinned to the already-used Rust TLS client.
+ureq = { version = "=3.5.0", default-features = false, features = ["rustls", "platform-verifier"] }
 photocraft-automation = { path = "../../crates/automation" }
 photocraft-engine = { workspace = true }
 photocraft-io = { workspace = true }

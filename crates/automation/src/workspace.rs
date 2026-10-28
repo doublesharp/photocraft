@@ -323,7 +323,8 @@ pub fn authorize_engine_command(id: &str, params: &Value) -> Result<(), Automati
             | "layer.smartObjects.convertToLayers"
             | "layer.smartObjects.saveContents"
     );
-    if (id.starts_with("layer.smartObjects.") && !in_memory_smart_command)
+    if matches!(id, "ai.models.install" | "ai.models.import" | "ai.models.remove")
+        || (id.starts_with("layer.smartObjects.") && !in_memory_smart_command)
         || matches!(
             id,
             "pattern.import"

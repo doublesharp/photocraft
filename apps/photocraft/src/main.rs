@@ -59,6 +59,7 @@ mod photoshop_settings;
 mod portal_save;
 mod presentation;
 // The print portal needs the session bus (zbus, Linux only); its pure helpers are tested everywhere.
+mod model_services;
 #[cfg(any(target_os = "linux", test))]
 mod print_portal;
 mod screen_color;
@@ -504,6 +505,8 @@ fn main() -> eframe::Result {
             };
             #[cfg(not(target_os = "linux"))]
             let session = Session::new();
+            let mut session = session;
+            model_services::configure(&mut session);
             PhotocraftApp::install_type_reset_hooks(&cc.egui_ctx);
             let mut app = PhotocraftApp::new(session, services);
             app.min_frame_ms = uncapped.then_some(1000.0 / 240.0);

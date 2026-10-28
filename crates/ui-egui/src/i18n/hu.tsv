@@ -4399,3 +4399,34 @@ cameraRaw	Yellow	Sárga
 	Font size presets	Betűméret-előbeállítások
 	Leading presets	Sorköz-előbeállítások
 	Tracking presets	Betűköz-előbeállítások
+
+# Local Remove model manager
+	Generative Remove Models…	Generatív eltávolítási modellek…
+	Generative Remove Models	Generatív eltávolítási modellek
+	Method:	Módszer:
+	Classical	Klasszikus
+	Models…	Modellek…
+	Enable local AI removal	Helyi AI-eltávolítás engedélyezése
+	In use	Használatban
+	Installed	Telepítve
+	Not installed	Nincs telepítve
+	Enable this process	Feldolgozás engedélyezése
+	Selected model	Kiválasztott modell
+	Model source and license	A modell forrása és licence
+	Model download source	A modell letöltési forrása
+	Download	Letöltés
+	Install from file…	Telepítés fájlból…
+	Remove model	Modell eltávolítása
+	Cancel model operation	Modellművelet megszakítása
+	Model installation cancelled	Modell telepítése megszakítva
+	Model removed	Modell eltávolítva
+	Model installed and verified	Modell telepítve és ellenőrizve
+	local AI processing is disabled	a helyi AI-feldolgozás ki van kapcsolva
+	the selected model is not yet qualified for Automatic Remove	a kiválasztott modell még nem alkalmas automatikus eltávolításra
+	Choose which local models may process your images. A brush stroke never downloads a model.	Válassza ki a képeket feldolgozó helyi modelleket. Egy ecsetvonás soha nem tölt le modellt.
+	Local AI inference is unavailable in this build. Classical Remove remains available.	A helyi AI ebben a kiadásban nem érhető el. A klasszikus eltávolítás továbbra is használható.
+	Model installation is unavailable in this session.	A modellek telepítése ebben a munkamenetben nem érhető el.
+	Settings take effect immediately. Downloads continue while this window is closed.	A beállítások azonnal érvényesek. A letöltések az ablak bezárása után is folytatódnak.
+	Settings take effect immediately.	A beállítások azonnal érvényesek.
+	Local background reconstruction; 512 px context, CPU processing	Helyi háttérrekonstrukció; 512 px környezet, CPU-feldolgozás
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Kompakt helyi rekonstrukció; régebbi MI-GAN-folyamat, 512 px környezet CPU-n

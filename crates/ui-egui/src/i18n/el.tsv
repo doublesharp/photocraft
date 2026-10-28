@@ -4188,3 +4188,34 @@ curves	Smooth	Εξομάλυνση
 	Font size presets	Προεπιλογές μεγέθους γραμματοσειράς
 	Leading presets	Προεπιλογές διάστιχου
 	Tracking presets	Προεπιλογές διαστήματος χαρακτήρων
+
+# Local Remove model manager
+	Generative Remove Models…	Μοντέλα παραγωγικής αφαίρεσης…
+	Generative Remove Models	Μοντέλα παραγωγικής αφαίρεσης
+	Method:	Μέθοδος:
+	Classical	Κλασική
+	Models…	Μοντέλα…
+	Enable local AI removal	Ενεργοποίηση τοπικής αφαίρεσης με AI
+	In use	Σε χρήση
+	Installed	Εγκατεστημένο
+	Not installed	Δεν έχει εγκατασταθεί
+	Enable this process	Ενεργοποίηση αυτής της επεξεργασίας
+	Selected model	Επιλεγμένο μοντέλο
+	Model source and license	Πηγή και άδεια μοντέλου
+	Model download source	Πηγή λήψης μοντέλου
+	Download	Λήψη
+	Install from file…	Εγκατάσταση από αρχείο…
+	Remove model	Αφαίρεση μοντέλου
+	Cancel model operation	Ακύρωση λειτουργίας μοντέλου
+	Model installation cancelled	Η εγκατάσταση του μοντέλου ακυρώθηκε
+	Model removed	Το μοντέλο αφαιρέθηκε
+	Model installed and verified	Το μοντέλο εγκαταστάθηκε και επαληθεύτηκε
+	local AI processing is disabled	η τοπική επεξεργασία AI είναι απενεργοποιημένη
+	the selected model is not yet qualified for Automatic Remove	το επιλεγμένο μοντέλο δεν έχει ακόμη εγκριθεί για αυτόματη αφαίρεση
+	Choose which local models may process your images. A brush stroke never downloads a model.	Επιλέξτε τοπικά μοντέλα για την επεξεργασία των εικόνων σας. Μια πινελιά δεν κατεβάζει ποτέ μοντέλο.
+	Local AI inference is unavailable in this build. Classical Remove remains available.	Η τοπική επεξεργασία AI δεν είναι διαθέσιμη σε αυτή την έκδοση. Η κλασική αφαίρεση παραμένει διαθέσιμη.
+	Model installation is unavailable in this session.	Η εγκατάσταση μοντέλων δεν είναι διαθέσιμη σε αυτή τη συνεδρία.
+	Settings take effect immediately. Downloads continue while this window is closed.	Οι ρυθμίσεις ισχύουν αμέσως. Οι λήψεις συνεχίζονται όταν κλείσει αυτό το παράθυρο.
+	Settings take effect immediately.	Οι ρυθμίσεις ισχύουν αμέσως.
+	Local background reconstruction; 512 px context, CPU processing	Τοπική ανακατασκευή φόντου· περιοχή 512 px, επεξεργασία CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Συμπαγής τοπική ανακατασκευή· παλαιότερη ροή MI-GAN, περιοχή 512 px σε CPU

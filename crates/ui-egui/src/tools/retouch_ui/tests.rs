@@ -556,8 +556,8 @@ fn waiting_remove_strokes_keep_their_own_brush() {
     assert!(remove_pending_commit(&mut app));
     assert!(!app.ui.status_error, "{}", app.ui.status);
     let (_, p) = app.session.journal.last().cloned().expect("a journaled command");
-    let sizes: Vec<_> = p["strokes"].as_array().unwrap().iter().map(|e| (e["size"].as_f64(), e["hardness"].as_f64())).collect();
-    assert_eq!(sizes, [(Some(20.0), Some(0.0)), (Some(4.0), Some(100.0))], "each stroke is removed with its own brush");
+    let sizes: Vec<_> = p["strokes"].as_array().unwrap().iter().map(|e| (e["brush"]["size"].as_f64(), e["brush"]["hardness"].as_f64())).collect();
+    assert_eq!(sizes, [(Some(20.0), Some(0.0)), (Some(4.0), Some(1.0))], "each stroke is removed with its own complete brush");
 }
 
 #[test]
@@ -810,4 +810,437 @@ fn art_history_stroke_runs_the_command() {
     app.ui.tool_options.art_history_tolerance = 0.0;
     drag(&mut app, Tool::ArtHistoryBrush);
     assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("paint.artHistoryBrush"));
+}
+
+/// Waiting masks cannot move onto a different selection or newer source pixels.
+#[test]
+fn queued_remove_cancels_after_source_revision_or_options_change() {
+    for change in ["selection", "source", "output"] {
+        let mut app = app();
+        app.ui.tool = Tool::Remove;
+        app.ui.tool_options.remove_after_each_stroke = false;
+        remove_pending_add(&mut app, &[[12.0, 10.0, 1.0], [16.0, 12.0, 1.0]]);
+        match change {
+            "selection" => {
+                app.run("select.rect", json!({"x": 1, "y": 1, "width": 5, "height": 5})).unwrap();
+            }
+            "source" => {
+                app.run("paint.pencil", json!({"points": [[80, 40]], "size": 2, "color": "#ff0000"})).unwrap();
+            }
+            _ => app.ui.tool_options.remove_new_layer = true,
+        }
+        let journal = app.session.journal.len();
+        assert!(!remove_pending_commit(&mut app), "{change}: a queued mask must keep its original source and output settings");
+        assert_eq!(app.session.journal.len(), journal, "{change}: Enter cannot submit the stale queue");
+        assert!(app.remove_pending.is_empty() && app.remove_trail.is_none());
+    }
+}
+
+/// A press during processing is refused before capturing a stroke that cannot be committed.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn remove_busy_document_refuses_new_gesture_before_capture() {
+    let mut app = app();
+    app.ui.tool = Tool::Remove;
+    let (done, wait) = std::sync::mpsc::channel();
+    let started = app
+        .session
+        .start_job(
+            "paint.remove",
+            json!({}),
+            "Remove",
+            true,
+            move |_| {
+                wait.recv().map_err(|e| photocraft_engine::EngineError::Other(e.to_string()))?;
+                Ok(())
+            },
+            |_, ()| Ok(json!({})),
+        )
+        .unwrap();
+    tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    let captured = app.drag.is_some();
+    done.send(()).unwrap();
+    if let photocraft_engine::jobs::Started::Job(id) = started {
+        app.session.wait_job(id).unwrap();
+    }
+    assert!(!captured, "processing must refuse a Remove press before capture");
+    assert!(app.remove_pending.is_empty());
+}
+
+#[test]
+fn queued_remove_freezes_method_sampling_and_model_preferences() {
+    for change in ["method", "sampling", "after", "selected model", "enabled models", "processing"] {
+        let mut app = app();
+        app.ui.tool = Tool::Remove;
+        app.ui.tool_options.remove_after_each_stroke = false;
+        remove_pending_add(&mut app, &[[12.0, 10.0, 1.0], [16.0, 12.0, 1.0]]);
+        match change {
+            "method" => app.ui.tool_options.remove_method = "auto".into(),
+            "sampling" => app.ui.tool_options.sample_all.remove = true,
+            "after" => app.ui.tool_options.remove_after_each_stroke = true,
+            "selected model" => {
+                app.run("prefs.set", json!({"path":"generativeRemove.selectedModel", "value":"migan-v1"})).unwrap();
+            }
+            "enabled models" => {
+                app.run("prefs.set", json!({"path":"generativeRemove.enabledModels", "value":["migan-v1"]})).unwrap();
+            }
+            _ => {
+                app.run("prefs.set", json!({"path":"generativeRemove.enabled", "value":true})).unwrap();
+            }
+        }
+        let journal = app.session.journal.len();
+        assert!(!remove_pending_commit(&mut app), "{change}: stale queue must not run");
+        assert_eq!(app.session.journal.len(), journal, "{change}: no Remove command");
+        assert!(app.remove_pending.is_empty() && app.remove_pending_target.is_none());
+    }
+}
+
+#[test]
+fn remove_gesture_does_not_retarget_when_source_or_settings_change_before_release() {
+    for change in ["selection", "source", "output", "method", "processing", "tool"] {
+        let mut app = app();
+        app.ui.tool = Tool::Remove;
+        tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, egui::Modifiers::NONE);
+        assert!(app.drag.is_some(), "{change}: press starts a gesture");
+        match change {
+            "selection" => {
+                app.run("select.rect", json!({"x":1,"y":1,"width":5,"height":5})).unwrap();
+            }
+            "source" => {
+                app.run("paint.pencil", json!({"points":[[80,40]],"size":2,"color":"#ff0000"})).unwrap();
+            }
+            "output" => app.ui.tool_options.remove_new_layer = true,
+            "method" => app.ui.tool_options.remove_method = "auto".into(),
+            "processing" => {
+                app.run("prefs.set", json!({"path":"generativeRemove.enabled", "value":true})).unwrap();
+            }
+            _ => app.ui.tool = Tool::Pencil,
+        }
+        let journal = app.session.journal.len();
+        tool_event(&mut app, ToolEvent::Up { x: 30.0, y: 20.0 }, egui::Modifiers::NONE);
+        assert_eq!(app.session.journal.len(), journal, "{change}: release must not submit Remove");
+        assert!(app.remove_pending.is_empty(), "{change}: no queued stroke");
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn queued_remove_enter_while_busy_keeps_the_mask_and_escape_discards_it() {
+    let mut app = app();
+    app.ui.tool = Tool::Remove;
+    app.ui.tool_options.remove_after_each_stroke = false;
+    remove_pending_add(&mut app, &[[12.0, 10.0, 1.0], [16.0, 12.0, 1.0]]);
+    let (done, wait) = std::sync::mpsc::channel();
+    let started = app
+        .session
+        .start_job(
+            "paint.remove",
+            json!({}),
+            "Remove",
+            true,
+            move |_| {
+                wait.recv().map_err(|e| photocraft_engine::EngineError::Other(e.to_string()))?;
+                Ok(())
+            },
+            |_, ()| Ok(json!({})),
+        )
+        .unwrap();
+    let journal = app.session.journal.len();
+    assert!(!remove_pending_commit(&mut app));
+    assert_eq!(app.session.journal.len(), journal);
+    assert_eq!(app.remove_pending.len(), 1, "a refused Enter does not lose the waiting mask");
+    assert!(remove_pending_cancel(&mut app));
+    done.send(()).unwrap();
+    if let photocraft_engine::jobs::Started::Job(id) = started {
+        app.session.wait_job(id).unwrap();
+    }
+    assert!(!remove_pending_commit(&mut app));
+    assert_eq!(app.session.journal.len(), journal);
+}
+
+#[test]
+fn remove_enter_during_a_gesture_waits_until_the_gesture_is_finished() {
+    let mut app = app();
+    app.ui.tool = Tool::Remove;
+    app.ui.tool_options.remove_after_each_stroke = false;
+    remove_pending_add(&mut app, &[[12.0, 10.0, 1.0], [16.0, 12.0, 1.0]]);
+    tool_event(&mut app, ToolEvent::Down { x: 25.0, y: 25.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    assert!(!remove_pending_commit(&mut app));
+    assert_eq!(app.remove_pending.len(), 1);
+    tool_event(&mut app, ToolEvent::Up { x: 30.0, y: 25.0 }, egui::Modifiers::NONE);
+    assert_eq!(app.remove_pending.len(), 2);
+    assert!(remove_pending_commit(&mut app));
+    let journal = app.session.journal.len();
+    assert!(!remove_pending_commit(&mut app));
+    assert_eq!(app.session.journal.len(), journal, "a second Enter cannot submit the same strokes again");
+}
+
+#[test]
+fn remove_keyboard_escape_discards_and_enter_applies_once() {
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        app()
+    });
+    h.run_steps(4);
+    h.state_mut().ui.tool = Tool::Remove;
+    h.state_mut().ui.tool_options.remove_after_each_stroke = false;
+    remove_pending_add(h.state_mut(), &[[12.0, 10.0, 1.0], [16.0, 12.0, 1.0]]);
+    let journal = h.state().session.journal.len();
+    h.key_press(egui::Key::Escape);
+    h.run_steps(4);
+    assert!(h.state().remove_pending.is_empty());
+    assert_eq!(h.state().session.journal.len(), journal, "Escape discards the queued mask");
+    remove_pending_add(h.state_mut(), &[[22.0, 10.0, 1.0], [26.0, 12.0, 1.0]]);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(4);
+    assert!(h.state().remove_pending.is_empty());
+    assert_eq!(h.state().session.journal.len(), journal + 1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(4);
+    assert_eq!(h.state().session.journal.len(), journal + 1, "Enter cannot apply twice");
+}
+
+#[test]
+fn remove_dispatches_the_chosen_method_and_never_installs_a_model_on_a_stroke() {
+    let mut app = app();
+    app.ui.tool = Tool::Remove;
+    app.ui.tool_options.remove_method = "auto".into();
+    drag(&mut app, Tool::Remove);
+    let (id, params) = app.session.journal.last().unwrap();
+    assert_eq!(id, "paint.remove");
+    assert_eq!(params["method"], "classical", "the journal records the effective method");
+    assert!(app.ui.status.contains("local AI processing is disabled"), "Auto's fallback must be visible: {}", app.ui.status);
+    let journal = app.session.journal.len();
+    app.ui.tool_options.remove_method = "ai".into();
+    tool_event(&mut app, ToolEvent::Down { x: 15.0, y: 20.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, egui::Modifiers::NONE);
+    assert!(app.ui.status_error, "explicit AI must report its unavailable processing");
+    assert_eq!(app.session.journal.len(), journal, "a failed AI stroke cannot become a classical edit");
+    assert!(!app.session.jobs_with_recent().iter().any(|job| job.command == "ai.models.install"));
+}
+
+#[test]
+fn remove_options_models_button_opens_the_manager() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 720.0)).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        app()
+    });
+    h.run_steps(4);
+    h.state_mut().ui.tool = Tool::Remove;
+    h.run_steps(4);
+    h.get_by_label("Models…").click();
+    h.run_steps(4);
+    assert!(h.state().ui.dialogs.iter().any(|dialog| dialog.fields.get("__prefsui") == Some(&json!("removeModels"))));
+    assert!(!h.state().session.has_jobs());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn background_remove_reports_automatic_fallback_and_effective_method() {
+    let mut app = app();
+    let started = app
+        .session
+        .start_job(
+            "paint.remove",
+            json!({}),
+            "Remove",
+            true,
+            |_| Ok(()),
+            |_, ()| Ok(json!({"effectiveMethod":"classical", "fallbackReason":"local AI processing is disabled"})),
+        )
+        .unwrap();
+    let photocraft_engine::jobs::Started::Job(id) = started else { panic!("native job should run in the background") };
+    app.session.wait_job(id).unwrap();
+    let ctx = egui::Context::default();
+    crate::jobs_ui::tick(&mut app, &ctx);
+    assert!(app.ui.status.contains("local AI processing is disabled"), "{}", app.ui.status);
+    let seen = crate::control::inspect(&app, &ctx);
+    assert_eq!(seen["remove"]["lastResult"]["effectiveMethod"], "classical");
+    assert_eq!(seen["remove"]["lastResult"]["fallbackReason"], "local AI processing is disabled");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn remove_press_started_while_busy_cannot_be_replayed_after_job_finishes() {
+    for dragged in [false, true] {
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_eframe(|cc| {
+            PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+            app()
+        });
+        h.run_steps(4);
+        h.state_mut().ui.tool = Tool::Remove;
+        h.run_steps(2);
+        let pos = h.state().last_canvas_rect.center();
+        let (done, wait) = std::sync::mpsc::channel();
+        let started = h
+            .state_mut()
+            .session
+            .start_job(
+                "paint.remove",
+                json!({}),
+                "Remove",
+                true,
+                move |_| {
+                    wait.recv().map_err(|error| photocraft_engine::EngineError::Other(error.to_string()))?;
+                    Ok(())
+                },
+                |_, ()| Ok(json!({})),
+            )
+            .unwrap();
+        let photocraft_engine::jobs::Started::Job(id) = started else { panic!("native job should run in the background") };
+        let journal = h.state().session.journal.len();
+        h.event(egui::Event::PointerMoved(pos));
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.step();
+        assert!(h.state().drag.is_none());
+        done.send(()).unwrap();
+        h.state_mut().session.wait_job(id).unwrap();
+        let end = if dragged { pos + egui::vec2(20.0, 0.0) } else { pos };
+        if dragged {
+            h.event(egui::Event::PointerMoved(end));
+            h.step();
+            assert!(h.state().drag.is_none(), "a refused press cannot become a drag");
+        }
+        h.event(egui::Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(4);
+        assert_eq!(h.state().session.journal.len(), journal, "a refused press cannot become a new stroke when the job finishes");
+        assert!(h.state().drag.is_none() && h.state().remove_pending.is_empty());
+        // The refusal ends on release: a later, independent click is accepted.
+        h.event(egui::Event::PointerMoved(pos));
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.step();
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(4);
+        assert_eq!(h.state().session.journal.len(), journal + 1, "the next press is not suppressed");
+    }
+}
+
+#[test]
+fn review_queue_is_discarded_when_method_changes_back_without_a_frame() {
+    let mut app = app();
+    app.ui.tool = Tool::Remove;
+    app.ui.tool_options.remove_after_each_stroke = false;
+    remove_pending_add(&mut app, &[[40.0, 30.0, 1.0]]);
+    let ctx = egui::Context::default();
+    for method in ["ai", "classical"] {
+        let (request, _reply) = crate::control::ControlRequest::new("ui.set", json!({"removeMethod":method}));
+        let _ = crate::control::handle(&mut app, &ctx, &request);
+    }
+    assert!(app.remove_pending.is_empty(), "a reverted setting transition retained old strokes");
+}
+
+#[test]
+fn review_queue_does_not_survive_a_document_round_trip() {
+    let mut app = app();
+    app.run("file.new", json!({"width":100,"height":60})).unwrap();
+    app.session.set_active(0);
+    app.ui.tool = Tool::Remove;
+    app.ui.tool_options.remove_after_each_stroke = false;
+    remove_pending_add(&mut app, &[[40.0, 30.0, 1.0]]);
+    app.session.set_active(1);
+    app.session.set_active(0);
+    assert!(!remove_pending_live(&mut app), "a document round trip revived old strokes");
+}
+
+#[test]
+fn review_queued_brush_geometry_survives_tip_and_scatter_changes() {
+    struct Black;
+    impl photocraft_ml::RemovalBackend for Black {
+        fn ready(&self, _: &str) -> bool {
+            true
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.0; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+        }
+    }
+    let run = |change: bool| {
+        let mut app = app();
+        app.run("file.new", json!({"width":100,"height":60,"background":"white"})).unwrap();
+        app.background_jobs = false;
+        app.session.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::new(None).with_backend(std::sync::Arc::new(Black))));
+        app.session.edit_prefs(|prefs| prefs.generative_remove.enabled = true);
+        app.ui.tool = Tool::Remove;
+        app.ui.tool_options.remove_method = "ai".into();
+        app.ui.tool_options.remove_after_each_stroke = false;
+        app.session.tools.brush.roundness = 0.2;
+        app.session.tools.brush.angle = 30.0;
+        remove_pending_add(&mut app, &[[50.0, 30.0, 1.0]]);
+        if change {
+            app.session.tools.brush.roundness = 1.0;
+            app.session.tools.brush.angle = 0.0;
+            app.session.tools.brush.scattering.enabled = true;
+            app.session.tools.brush.scattering.scatter.jitter = 1.0;
+        }
+        assert!(remove_pending_commit(&mut app));
+        assert!(!app.ui.status_error, "{}", app.ui.status);
+        let st = app.session.active().unwrap();
+        st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().read_region(st.doc.bounds())
+    };
+    let unchanged = run(false);
+    let changed = run(true);
+    let different = unchanged.iter().zip(&changed).filter(|(left, right)| left != right).count();
+    assert_eq!(different, 0, "changed brush geometry changed the cached tinted footprint submitted to Remove");
+}
+
+#[test]
+fn review2_remove_gesture_keeps_the_brush_captured_at_press() {
+    for after_each in [false, true] {
+        let mut app = app();
+        app.ui.tool = Tool::Remove;
+        app.ui.tool_options.remove_after_each_stroke = after_each;
+        app.session.tools.brush.roundness = 0.3;
+        tool_event(&mut app, ToolEvent::Down { x: 45.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
+        app.run("tools.setBrush", json!({"brush":{"size":40,"roundness":1.0}})).unwrap();
+        tool_event(&mut app, ToolEvent::Up { x: 45.0, y: 30.0 }, egui::Modifiers::NONE);
+        if !after_each {
+            assert!(remove_pending_commit(&mut app));
+        }
+        assert!(!app.ui.status_error, "{}", app.ui.status);
+        let (_, params) = app.session.journal.last().unwrap();
+        let brush = if after_each { &params["brush"] } else { &params["strokes"][0]["brush"] };
+        assert_eq!(brush["size"].as_f64(), Some(16.0), "release used the changed brush");
+        assert!((brush["roundness"].as_f64().unwrap() - 0.3).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn review2_queued_remove_does_not_survive_context_round_trips_in_one_action() {
+    let sets = [
+        vec![("channel.target".into(), json!({"channel":"red"})), ("channel.target".into(), json!({"channel":"composite"}))],
+        vec![
+            ("prefs.set".into(), json!({"path":"generativeRemove.enabled","value":true})),
+            ("prefs.set".into(), json!({"path":"generativeRemove.enabled","value":false})),
+        ],
+    ];
+    for steps in sets {
+        let mut app = app();
+        app.ui.tool = Tool::Remove;
+        app.ui.tool_options.remove_after_each_stroke = false;
+        remove_pending_add(&mut app, &[[40.0, 30.0, 1.0]]);
+        app.session.actions.list.push(photocraft_engine::actions_cmds::Action::new("Context round trip", steps));
+        app.run("actions.play", json!({"action":"Context round trip"})).unwrap();
+        assert!(app.remove_pending.is_empty(), "nested context transitions retained the queued strokes");
+    }
+}
+
+#[test]
+fn review3_pending_remove_rejects_excessive_dabs_before_tint_allocation() {
+    let mut app = app();
+    app.ui.tool = Tool::Remove;
+    app.ui.tool_options.remove_after_each_stroke = false;
+    app.session.tools.brush.size = 1.0;
+    app.session.tools.brush.scattering.enabled = true;
+    app.session.tools.brush.scattering.count = 16;
+    let points: Vec<_> = (0..10_000).map(|i| [40.0 + f64::from(i % 2) * 10.0, 30.0, 1.0]).collect();
+    remove_pending_add(&mut app, &points);
+    assert!(app.remove_pending.is_empty());
+    assert!(app.remove_trail.is_none(), "an inadmissible stroke allocated its tint renderer");
+    assert!(app.ui.status_error);
+    assert!(app.ui.status.contains("brush work"), "{}", app.ui.status);
 }

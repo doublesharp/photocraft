@@ -1,0 +1,446 @@
+//! Managed, content-pinned model files. One service admits one resource owner at a time.
+mod capability;
+
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::SystemTime;
+
+use crate::{Error, ModelDownloader, ModelSpec, ModelStatus, RemovalBackend, RemovalControl, RemovalInput, RemovalOutput, Result, check};
+use capability::{Partial, Quarantine, StoreDir, same_file};
+use sha2::{Digest, Sha256};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Fingerprint {
+    bytes: u64,
+    modified: Option<SystemTime>,
+    created: Option<SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+impl Fingerprint {
+    fn of(meta: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            bytes: meta.len(),
+            modified: meta.modified().ok(),
+            created: meta.created().ok(),
+            #[cfg(unix)]
+            device: meta.dev(),
+            #[cfg(unix)]
+            inode: meta.ino(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct State {
+    verified: HashMap<&'static str, Fingerprint>,
+}
+
+pub(crate) struct NativeService {
+    directory: Option<PathBuf>,
+    downloader: Mutex<Option<Arc<dyn ModelDownloader>>>,
+    state: Mutex<State>,
+}
+
+// Services can be constructed for separate sessions. They must not each admit a separate
+// model working set or keep their own warm family in the same process.
+static BUSY: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "native-inference")]
+static CACHED: Mutex<Option<crate::runtime::Cached>> = Mutex::new(None);
+
+/// Process-wide ownership that can travel with an unconsumed worker result.
+pub(crate) struct Lease(&'static AtomicBool);
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+impl NativeService {
+    pub fn new(directory: Option<PathBuf>) -> Self {
+        Self { directory, downloader: Mutex::new(None), state: Mutex::new(State::default()) }
+    }
+
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn begin(&self) -> Result<Lease> {
+        BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).map(|_| Lease(&BUSY)).map_err(|_| Error::Busy)
+    }
+
+    pub(crate) fn prepare_model(&self, id: &str, injected: bool) {
+        #[cfg(feature = "native-inference")]
+        {
+            let mut cached = CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if injected || cached.as_ref().is_some_and(|cached| cached.model_id != id) {
+                *cached = None;
+            }
+        }
+        #[cfg(not(feature = "native-inference"))]
+        let _ = (id, injected);
+    }
+
+    pub fn set_downloader(&self, downloader: Arc<dyn ModelDownloader>) {
+        *self.downloader.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(downloader);
+    }
+
+    pub fn management_available(&self) -> bool {
+        self.directory.is_some()
+    }
+
+    fn directory(&self, create: bool) -> Result<StoreDir> {
+        let directory =
+            self.directory.as_deref().ok_or_else(|| Error::Storage("model storage is unavailable; choose a writable local model directory".into()))?;
+        StoreDir::acquire(directory, create)
+    }
+
+    fn file_name(model: &ModelSpec) -> String {
+        format!("{}-{}.onnx", model.id, model.sha256)
+    }
+
+    // Path exposure is retained only for fixture assertions; production I/O uses StoreDir.
+    #[cfg(test)]
+    fn path(&self, model: &ModelSpec, create: bool) -> Result<PathBuf> {
+        self.directory(create)?;
+        self.directory.as_deref().map(|d| d.join(Self::file_name(model))).ok_or_else(|| Error::Storage("model storage is unavailable".into()))
+    }
+
+    pub fn status(&self, runtime: bool) -> Vec<ModelStatus> {
+        let busy = BUSY.load(Ordering::Acquire);
+        crate::catalog::CATALOG
+            .iter()
+            .map(|model| {
+                let fingerprint = self.directory(false).ok().and_then(|dir| {
+                    let file = dir.open_regular(OsStr::new(&Self::file_name(model))).ok()?;
+                    dir.ensure_attached().ok()?;
+                    let metadata = file.metadata().ok()?;
+                    Some(Fingerprint::of(&metadata))
+                });
+                // Presence is separate from readiness: even a truncated owned file must be
+                // visible to the manager so the user can remove it and install again.
+                let installed = fingerprint.is_some();
+                let correct_size = fingerprint.as_ref().is_some_and(|f| f.bytes == model.bytes);
+                let verified = fingerprint.as_ref().is_some_and(|f| self.state().verified.get(model.id) == Some(f));
+                let reason = if !runtime {
+                    Some("native AI inference is unavailable in this build".into())
+                } else if self.directory.is_none() {
+                    Some("model storage is unavailable".into())
+                } else if !installed {
+                    Some("model is not installed".into())
+                } else if !correct_size {
+                    Some("The installed model has an unexpected size; remove it and install again".into())
+                } else {
+                    None
+                };
+                ModelStatus { id: model.id.into(), installed, available: runtime && correct_size, busy, verified, reason }
+            })
+            .collect()
+    }
+
+    #[cfg(any(test, feature = "native-inference"))]
+    fn verify_open(&self, model: &'static ModelSpec, ctl: &dyn RemovalControl) -> Result<(File, Fingerprint)> {
+        self.state().verified.remove(model.id);
+        let dir = self.directory(false).map_err(|e| match e {
+            Error::Io(ref io) if io.kind() == std::io::ErrorKind::NotFound => Error::NotInstalled(model.id.into()),
+            _ => e,
+        })?;
+        self.verify_in(&dir, model, ctl)
+    }
+
+    fn verify_in(&self, dir: &StoreDir, model: &'static ModelSpec, ctl: &dyn RemovalControl) -> Result<(File, Fingerprint)> {
+        check(ctl)?;
+        self.state().verified.remove(model.id);
+        let name = Self::file_name(model);
+        let mut file = dir.open_regular(OsStr::new(&name)).map_err(|e| match e {
+            Error::Io(ref io) if io.kind() == std::io::ErrorKind::NotFound => Error::NotInstalled(model.id.into()),
+            _ => e,
+        })?;
+        let fingerprint = Fingerprint::of(&file.metadata()?);
+        if fingerprint.bytes != model.bytes {
+            return Err(Error::Integrity(format!("{} has an unexpected size; remove it and install again", model.label)));
+        }
+        ctl.progress(0.02, "Verifying model");
+        verify_reader(&mut file, model, ctl, None)?;
+        if Fingerprint::of(&file.metadata()?) != fingerprint {
+            return Err(Error::Integrity("model data changed during verification".into()));
+        }
+        dir.ensure_attached()?;
+        let current = dir.open_regular(OsStr::new(&name))?;
+        if !same_file(&file, &current)? {
+            return Err(Error::Storage("model file was replaced during verification".into()));
+        }
+        self.state().verified.insert(model.id, fingerprint.clone());
+        file.seek(SeekFrom::Start(0))?;
+        Ok((file, fingerprint))
+    }
+
+    pub fn import(&self, model: &'static ModelSpec, path: &Path, ctl: &dyn RemovalControl) -> Result<()> {
+        let _lease = self.begin()?;
+        check(ctl)?;
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let name = path.file_name().ok_or_else(|| Error::Storage("select a regular model file".into()))?;
+        let source_dir = StoreDir::acquire(parent, false)?;
+        let mut source = source_dir.open_regular(name)?;
+        source_dir.ensure_attached()?;
+        if source.metadata()?.len() != model.bytes {
+            return Err(Error::Integrity(format!("expected {} bytes for {}", model.bytes, model.label)));
+        }
+        self.publish(model, &mut source, ctl)
+    }
+
+    pub fn install(&self, model: &'static ModelSpec, ctl: &dyn RemovalControl) -> Result<()> {
+        let _lease = self.begin()?;
+        check(ctl)?;
+        let dir = self.directory(true)?;
+        match self.verify_in(&dir, model, ctl) {
+            Ok(_) => return Ok(()),
+            Err(Error::NotInstalled(_)) => {}
+            Err(e) => return Err(e),
+        }
+        let downloader = self
+            .downloader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| Error::Download("model downloading is unavailable; use Install from file".into()))?;
+        let mut source = downloader.open(model)?;
+        self.publish_in(&dir, model, &mut source, ctl)
+    }
+
+    fn publish(&self, model: &'static ModelSpec, reader: &mut dyn Read, ctl: &dyn RemovalControl) -> Result<()> {
+        let dir = self.directory(true)?;
+        self.publish_in(&dir, model, reader, ctl)
+    }
+
+    fn publish_in(&self, dir: &StoreDir, model: &'static ModelSpec, reader: &mut dyn Read, ctl: &dyn RemovalControl) -> Result<()> {
+        self.publish_in_with(dir, model, reader, ctl, || {})
+    }
+
+    fn publish_in_with(
+        &self,
+        dir: &StoreDir,
+        model: &'static ModelSpec,
+        reader: &mut dyn Read,
+        ctl: &dyn RemovalControl,
+        before_link: impl FnOnce(),
+    ) -> Result<()> {
+        check(ctl)?;
+        let mut partial = Partial::create(dir)?;
+        verify_reader(reader, model, ctl, Some(&mut partial.file))?;
+        partial.file.sync_all()?;
+        check(ctl)?;
+        // Verify the file that will be linked, rather than trusting only the incoming stream.
+        partial.file.seek(SeekFrom::Start(0))?;
+        verify_reader(&mut partial.file, model, ctl, None)?;
+        dir.ensure_attached()?;
+        partial.ensure_owned()?;
+        check(ctl)?;
+        before_link();
+        let name = Self::file_name(model);
+        ctl.begin_irreversible()?;
+        match dir.dir.hard_link(&partial.name, &dir.dir, &name) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.verify_in(dir, model, &CommittedControl(ctl))?;
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        }
+        let published = dir.open_regular(OsStr::new(&name));
+        let valid = published.as_ref().is_ok_and(|file| same_file(file, &partial.file).unwrap_or(false));
+        if !valid || dir.ensure_attached().is_err() {
+            // Check the observed entry before cleanup. Portable unlink is still name-based,
+            // so a writer with access to this directory can race the check itself.
+            match published {
+                Ok(file) => {
+                    if dir.open_regular(OsStr::new(&name)).is_ok_and(|current| same_file(&file, &current).unwrap_or(false)) {
+                        let _ = dir.dir.remove_file(&name);
+                    }
+                }
+                Err(_) => {
+                    if dir.dir.symlink_metadata(&name).is_ok_and(|metadata| !metadata.is_file()) {
+                        // Removing the directory entry itself never follows a substituted symlink.
+                        let _ = dir.dir.remove_file(&name);
+                    }
+                }
+            }
+            return Err(Error::Storage("model directory or staged file changed during publication".into()));
+        }
+        let published = published?;
+        ctl.progress(1., "Model installed");
+        let still_valid = dir.ensure_attached();
+        let current = dir.open_regular(OsStr::new(&name));
+        if still_valid.is_err() || !current.as_ref().is_ok_and(|file| same_file(&published, file).unwrap_or(false)) {
+            if current.as_ref().is_ok_and(|file| same_file(&published, file).unwrap_or(false)) {
+                let _ = dir.dir.remove_file(&name);
+            }
+            return Err(still_valid.err().unwrap_or_else(|| Error::Storage("model directory or file changed during publication".into())));
+        }
+        self.state().verified.insert(model.id, Fingerprint::of(&published.metadata()?));
+        Ok(())
+    }
+
+    pub fn remove(&self, model: &'static ModelSpec) -> Result<()> {
+        let _lease = self.begin()?;
+        self.state().verified.remove(model.id);
+        let dir = match self.directory(false) {
+            Ok(dir) => dir,
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        self.remove_in(&dir, model, || {})
+    }
+
+    fn remove_in(&self, dir: &StoreDir, model: &'static ModelSpec, before_unlink: impl FnOnce()) -> Result<()> {
+        let name = Self::file_name(model);
+        let file = match dir.open_regular(OsStr::new(&name)) {
+            Ok(file) => file,
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        dir.ensure_attached()?;
+        let current = dir.open_regular(OsStr::new(&name))?;
+        if !same_file(&file, &current)? {
+            return Err(Error::Storage("model file was replaced during removal".into()));
+        }
+        let quarantine = Quarantine::create(dir)?;
+        before_unlink();
+        quarantine.move_entry(&name)?;
+        let validated = dir
+            .ensure_attached()
+            .and_then(|_| quarantine.ensure_attached())
+            .and_then(|_| if quarantine.matches(&file)? { Ok(()) } else { Err(Error::Storage("model file was replaced during removal".into())) });
+        if let Err(error) = validated {
+            return match quarantine.restore(&name) {
+                Ok(()) => Err(error),
+                Err(_) => Err(quarantine.recovery_error(error)),
+            };
+        }
+        if let Err(error) = quarantine.remove_entry() {
+            return match quarantine.restore(&name) {
+                Ok(()) => Err(error),
+                Err(_) => Err(quarantine.recovery_error(error)),
+            };
+        }
+        self.state().verified.remove(model.id);
+        #[cfg(feature = "native-inference")]
+        {
+            let mut cached = CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cached.as_ref().is_some_and(|cached| cached.model_id == model.id) {
+                *cached = None;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn infer_backend(&self, backend: &dyn RemovalBackend, id: &str, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
+        check(ctl)?;
+        if !backend.ready(id) {
+            return Err(Error::NotInstalled(id.into()));
+        }
+        let out = backend.infer(id, input, ctl)?;
+        check(ctl)?;
+        validate_output(input, &out)?;
+        Ok(out)
+    }
+
+    #[cfg(feature = "native-inference")]
+    pub fn infer(&self, model: &'static ModelSpec, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
+        check(ctl)?;
+        let (file, fingerprint) = self.verify_open(model, ctl)?;
+        let cached = CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        // Only one compiled family remains resident. A different model drops the old plan before
+        // allocating the new one. The busy lease outlives every plan and the full forward.
+        let (cached, load_ms) = crate::runtime::load(model, file, fingerprint, cached, ctl)?;
+        let result = crate::runtime::infer(model, &cached, input, ctl);
+        *CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cached);
+        let mut out = result?;
+        out.load_ms = load_ms;
+        check(ctl)?;
+        validate_output(input, &out)?;
+        Ok(out)
+    }
+}
+
+// Once an irreversible commit starts, even the idempotent existing-file path must not
+// return Cancelled. The host's gate serializes cancellation with publication.
+struct CommittedControl<'a>(&'a dyn RemovalControl);
+impl RemovalControl for CommittedControl<'_> {
+    fn cancelled(&self) -> bool {
+        false
+    }
+    fn progress(&self, fraction: f32, label: &str) {
+        self.0.progress(fraction, label);
+    }
+}
+
+fn validate_output(input: &RemovalInput, out: &RemovalOutput) -> Result<()> {
+    if out.rgb.len() != input.rgb.len()
+        || out.rgb.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        || !out.inference_scale.is_finite()
+        || !(0.0..=1.0).contains(&out.inference_scale)
+        || out.inference_scale == 0.0
+        || !out.load_ms.is_finite()
+        || out.load_ms < 0.0
+        || !out.forward_ms.is_finite()
+        || out.forward_ms < 0.0
+    {
+        return Err(Error::Inference("adapter returned malformed image data or diagnostics".into()));
+    }
+    Ok(())
+}
+
+#[cfg(any(test, feature = "native-inference"))]
+pub(crate) fn verified_snapshot(file: &mut File, model: &ModelSpec, ctl: &dyn RemovalControl) -> Result<Vec<u8>> {
+    let size = usize::try_from(model.bytes).map_err(|_| Error::Inference("model is too large for this platform".into()))?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|_| Error::Inference("not enough memory to load the verified model".into()))?;
+    verify_reader(file, model, ctl, Some(&mut bytes))?;
+    Ok(bytes)
+}
+
+fn verify_reader(reader: &mut dyn Read, model: &ModelSpec, ctl: &dyn RemovalControl, mut write: Option<&mut dyn Write>) -> Result<()> {
+    let mut sha = Sha256::new();
+    let mut bytes = 0u64;
+    let mut buffer = [0u8; 65_536];
+    loop {
+        check(ctl)?;
+        let limit = (model.bytes.saturating_sub(bytes).saturating_add(1)).min(buffer.len() as u64) as usize;
+        let slice = buffer.get_mut(..limit).ok_or_else(|| Error::Integrity("invalid model byte bound".into()))?;
+        let n = reader.read(slice)?;
+        if n == 0 {
+            break;
+        }
+        bytes = bytes.saturating_add(n as u64);
+        if bytes > model.bytes {
+            return Err(Error::Integrity("download exceeds the pinned model size".into()));
+        }
+        let part = slice.get(..n).ok_or_else(|| Error::Integrity("invalid model stream".into()))?;
+        sha.update(part);
+        if let Some(file) = write.as_deref_mut() {
+            file.write_all(part)?;
+        }
+        ctl.progress((bytes as f32 / model.bytes.max(1) as f32) * 0.98, "Verifying model data");
+    }
+    if bytes != model.bytes {
+        return Err(Error::Integrity(format!("expected {} model bytes, received {bytes}", model.bytes)));
+    }
+    let digest = format!("{:x}", sha.finalize());
+    if digest != model.sha256 {
+        return Err(Error::Integrity("SHA-256 does not match the pinned model; the previous install is unchanged".into()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

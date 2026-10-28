@@ -47,7 +47,7 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         return e;
     }
     match id {
-        "window.panel.activate" | "window.panel.layout" | "ui.dock" => true,
+        "window.panel.activate" | "window.panel.layout" | "ui.dock" | "edit.preferences.generativeRemove" => true,
         "window.panel.group"
         | "window.panel.move"
         | "window.panel.float"

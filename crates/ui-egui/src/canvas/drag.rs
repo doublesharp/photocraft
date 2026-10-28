@@ -31,6 +31,10 @@ pub struct Drag {
     /// keeps the locked direction stable between events. The Move tool's own drags use `move_mods`.
     pub sel_axis: Option<[f64; 2]>,
     pub lasso: Option<crate::lasso_ui::Lasso>,
+    /// Remove freezes its source and non-brush settings at the press.
+    pub(crate) remove_target: Option<crate::retouch_ui::RemoveTarget>,
+    /// The effective Remove brush at pointer-down, shared by the tint and submission.
+    pub(crate) remove_brush: Option<photocraft_paint::BrushSettings>,
 }
 
 impl Drag {
@@ -49,6 +53,8 @@ impl Drag {
             sel_move: None,
             sel_axis: None,
             lasso: None,
+            remove_target: None,
+            remove_brush: None,
         }
     }
 

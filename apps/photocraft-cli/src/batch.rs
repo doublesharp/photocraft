@@ -50,7 +50,15 @@ fn strip_shell_steps(action: &mut Action) {
 pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result {
     let (in_dir, out_dir) = (a.in_dir.as_path(), a.out.as_path());
     let (actions, mut set, warnings) = load_actions_file(&a.actions, a.action.as_deref())?;
+    if let Some((id, _)) = actions.iter().find(|(id, _)| photocraft_engine::model_cmds::is_management(id)) {
+        return Err(photocraft_engine::EngineError::Other(format!("model management `{id}` cannot run in a batch")).into());
+    }
     set.iter_mut().for_each(strip_shell_steps);
+    let mut configuration = photocraft_engine::Session::new();
+    crate::processing_preferences::configure(&mut configuration).map_err(photocraft_engine::EngineError::Other)?;
+    let processing = configuration.prefs().generative_remove.clone();
+    let memory = configuration.prefs().performance.memory_usage_mb;
+    let service = configuration.removal_service();
     warn_all(err, &warnings);
     let opts = ExportOptions::from(&a.export);
     // Results are saved as `<out>/<stem>.<ext>`, so an `--out` that is the `--in` folder would
@@ -78,6 +86,11 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
         let r = (|| -> Result<Vec<String>> {
             written.check(&target_text).map_err(CliError::OutputClaimed)?;
             let mut h = Headless::trusted_local();
+            h.session.set_removal_service(service.clone());
+            h.session.edit_prefs(|prefs| {
+                prefs.generative_remove = processing.clone();
+                prefs.performance.memory_usage_mb = memory;
+            });
             // Steps that play another action find it in the set; the session's playback stack
             // stops an action that calls itself.
             h.session.actions.list = set.clone();
@@ -119,6 +132,7 @@ pub(crate) fn droplet(a: &DropletArgs, out: &mut dyn Write, err: &mut dyn Write)
         p["output"] = json!(o);
     }
     let mut s = photocraft_engine::Session::new();
+    crate::processing_preferences::configure(&mut s).map_err(photocraft_engine::EngineError::Other)?;
     let r = s.execute("file.automate.runDroplet", p)?;
     for f in r["files"].as_array().into_iter().flatten() {
         let _ = writeln!(out, "ok    {}", f.as_str().unwrap_or_default());

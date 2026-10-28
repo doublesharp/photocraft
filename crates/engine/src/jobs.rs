@@ -85,6 +85,8 @@ pub struct JobCtx {
 #[derive(Default)]
 struct Shared {
     cancel: AtomicBool,
+    /// Serializes cancellation with the start of an irreversible external commit.
+    committing: Mutex<bool>,
     /// `f32` bits of the progress fraction. Non-negative floats order like their bits, so
     /// `fetch_max` keeps progress monotonic even with several reporting threads.
     progress: AtomicU32,
@@ -121,9 +123,28 @@ impl JobCtx {
         self.shared.cancel.load(Ordering::Relaxed)
     }
 
-    /// Ask the job to stop (idempotent).
+    /// Ask the job to stop (idempotent), unless an external commit has already begun.
     pub fn cancel(&self) {
+        let _ = self.try_cancel();
+    }
+
+    fn try_cancel(&self) -> bool {
+        let committing = self.shared.committing.lock().unwrap_or_else(PoisonError::into_inner);
+        if *committing {
+            return false;
+        }
         self.shared.cancel.store(true, Ordering::Relaxed);
+        true
+    }
+
+    /// Atomically close the cancellation window before an irreversible external side effect.
+    pub fn begin_irreversible(&self) -> Result<()> {
+        let mut committing = self.shared.committing.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.cancelled() {
+            return Err(EngineError::Cancelled);
+        }
+        *committing = true;
+        Ok(())
     }
 
     /// `Err(Cancelled)` once cancelled, for `?` between stages.
@@ -148,6 +169,18 @@ impl JobCtx {
         let cancel = || self.cancelled();
         let progress = |p: f32| self.progress(lo + (hi - lo) * p, "");
         f(&Interrupt::new(&cancel, &progress))
+    }
+}
+
+impl photocraft_ml::RemovalControl for JobCtx {
+    fn cancelled(&self) -> bool {
+        JobCtx::cancelled(self)
+    }
+    fn progress(&self, fraction: f32, label: &str) {
+        JobCtx::progress(self, fraction, label);
+    }
+    fn begin_irreversible(&self) -> photocraft_ml::Result<()> {
+        JobCtx::begin_irreversible(self).map_err(|_| photocraft_ml::Error::Cancelled)
     }
 }
 
@@ -314,6 +347,62 @@ impl std::fmt::Debug for Jobs {
     }
 }
 
+/// Freeze the effective method, model and each rendered brush for action replay. The internal
+/// brush payload is removed before the command result is returned to callers.
+fn canonical_remove_params(id: &str, mut params: Value, result: &mut Value) -> Value {
+    if id != "paint.remove" || params.get("method").is_none() {
+        return params;
+    }
+    let brushes = result.as_object_mut().and_then(|object| object.remove("__removeBrushes"));
+    let Some(method) = result.get("effectiveMethod").and_then(Value::as_str) else { return params };
+    let Some(object) = params.as_object_mut() else { return params };
+    object.insert("method".into(), json!(method));
+    if method == "ai" {
+        for key in ["modelId", "modelSha256"] {
+            if let Some(value) = result.get(key) {
+                object.insert(key.into(), value.clone());
+            }
+        }
+    } else {
+        object.remove("modelId");
+        object.remove("modelSha256");
+    }
+    object.entry("seed").or_insert(json!(0x0052_e30eu64));
+    if let Some(Value::Array(brushes)) = brushes {
+        let mut frozen = false;
+        if let Some(Value::Array(strokes)) = object.get_mut("strokes") {
+            if strokes.len() == brushes.len() {
+                for (stroke, brush) in strokes.iter_mut().zip(brushes) {
+                    if let Some(entry) = stroke.as_object_mut() {
+                        for key in ["size", "hardness", "spacing"] {
+                            entry.remove(key);
+                        }
+                        entry.insert("brush".into(), brush);
+                    } else {
+                        let points = std::mem::take(stroke);
+                        *stroke = json!({"points":points, "brush":brush});
+                    }
+                }
+                frozen = true;
+            }
+        } else if brushes.len() == 1
+            && let Some(brush) = brushes.into_iter().next()
+        {
+            object.insert("brush".into(), brush);
+            frozen = true;
+        }
+        if frozen {
+            for key in ["size", "hardness", "spacing", "opacity", "flow"] {
+                object.remove(key);
+            }
+            if object.contains_key("strokes") {
+                object.remove("brush");
+            }
+        }
+    }
+    params
+}
+
 /// How [`Session::start`] ended.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Started {
@@ -373,7 +462,9 @@ pub fn run<T: Send + 'static>(
     let document = s.active().and_then(|d| d.path.as_deref()).map(std::path::PathBuf::from);
     let _document = crate::doc_path::scope(document.as_deref());
     if !s.jobs.spawn || cfg!(target_arch = "wasm32") {
-        let t = work(&s.jobs.inline.clone().unwrap_or_default())?;
+        let ctx = s.jobs.inline.clone().unwrap_or_default();
+        let t = work(&ctx)?;
+        ctx.check()?;
         return apply(s, t);
     }
     if s.jobs.pending.is_some() {
@@ -701,8 +792,10 @@ impl Session {
         if matches!(self.jobs.running[i].command.as_str(), "file.print" | "file.printOneCopy") {
             return false;
         }
+        if !self.jobs.running[i].ctx.try_cancel() {
+            return false;
+        }
         let job = self.jobs.running.remove(i);
-        job.ctx.cancel();
         self.end_job(&job, JobOutcome::Cancelled);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(h) = job.handle {
@@ -727,6 +820,11 @@ impl Session {
     /// Running job `id`.
     pub fn job(&self, id: JobId) -> Option<JobInfo> {
         self.jobs.running.iter().find(|r| r.id == id).map(Running::info)
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn test_job_worker_finished(&self, id: JobId) -> bool {
+        self.jobs.running.iter().find(|job| job.id == id).and_then(|job| job.handle.as_ref()).is_some_and(|handle| handle.is_finished())
     }
 
     /// Running jobs.
@@ -792,6 +890,10 @@ impl Session {
         if let Some(gate) = self.authorize {
             gate(id, &params)?;
         }
+        crate::model_cmds::refuse_playback(self, id)?;
+        if id == "paint.remove" {
+            crate::retouch_cmds::validate_remove_options(self, &params)?;
+        }
         let _authorization = AuthorizationScope::enter(self.authorize);
         let _document = crate::doc_path::scope(self.active().and_then(|d| d.path.as_deref()).map(std::path::Path::new));
         // Last Filter runs as the filter it repeats: journaled, recorded in an action, faded and
@@ -849,10 +951,17 @@ impl Session {
         // Last-resort guard (AGENTS.md, Never crash): a command that panics anyway fails with an
         // error instead of taking the app down. `edit` only commits a document after its closure
         // returns, so the documents are unchanged.
+        let remove_target = self.active().map(|st| (st.doc.id, st.active_layer, st.channel_view.target));
+        let remove_preferences = id.starts_with("prefs.").then(|| self.prefs().generative_remove.clone());
         self.live_commit = live_commit.filter(|live| live.cmd == id);
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &run_params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("`{id}` failed with an internal error (logged); the document is unchanged"))));
         self.live_commit = None;
+        if self.active().map(|st| (st.doc.id, st.active_layer, st.channel_view.target)) != remove_target
+            || remove_preferences.is_some_and(|before| before != self.prefs().generative_remove)
+        {
+            self.note_remove_context_change();
+        }
         if self.actions.recording.is_none() {
             self.actions.recording = recording;
         }
@@ -881,7 +990,7 @@ impl Session {
                 self.jobs.running.push(job);
                 Ok(Started::Job(jid))
             }
-            (Ok(v), None) => {
+            (Ok(mut v), None) => {
                 if let Some(before) = before {
                     self.add_relayout_damage(&before);
                 }
@@ -896,7 +1005,8 @@ impl Session {
                         st.fx_collapsed.push(layer_id);
                     }
                 }
-                self.after_command(id, params, spec.journal, Some(nested_from), pre_selected.as_deref());
+                let recorded = canonical_remove_params(id, params, &mut v);
+                self.after_command(id, recorded, spec.journal, Some(nested_from), pre_selected.as_deref());
                 Ok(Started::Done(v))
             }
         }
@@ -1019,7 +1129,7 @@ impl Session {
         // contract as synchronous dispatch without truncating work done while the worker ran.
         let nested_from = self.journal.len();
         let recording = if *journal && crate::actions_cmds::replayable(command) { self.actions.recording.take() } else { None };
-        let r = match apply {
+        let mut r = match apply {
             Some(f) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self, payload)))
                 .unwrap_or_else(|_| Err(EngineError::Other(format!("`{label}` failed with an internal error (logged); the document is unchanged")))),
             None => Err(EngineError::Other("internal error: job applied twice".into())),
@@ -1033,8 +1143,9 @@ impl Session {
         // Finish successful command bookkeeping on the document the job edited.
         // Restoring the viewed document first would attribute Fade and slice updates
         // to that document instead, when the user switched tabs mid-job.
-        if r.is_ok() {
-            self.after_command(command, params.clone(), *journal, Some(nested_from), pre_selected.as_deref());
+        if let Ok(value) = &mut r {
+            let recorded = canonical_remove_params(command, params.clone(), value);
+            self.after_command(command, recorded, *journal, Some(nested_from), pre_selected.as_deref());
             if foreign && let Some((start, _)) = self.actions.recording.as_mut() {
                 *start = self.journal.len();
             }

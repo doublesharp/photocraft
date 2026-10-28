@@ -525,6 +525,13 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
             app.sync_views();
             crate::file_ui::print_status(app, result);
         }
+        JobOutcome::Done(ref result) if e.command == "paint.remove" => {
+            app.sync_views();
+            if !crate::retouch_ui::report_remove_result(app, result) {
+                app.ui.status = e.label;
+                app.ui.status_error = false;
+            }
+        }
         JobOutcome::Done(_) => {
             app.sync_views();
             app.ui.status = e.label;

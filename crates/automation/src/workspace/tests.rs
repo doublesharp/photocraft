@@ -649,3 +649,17 @@ fn absolute_paths_are_checked_against_the_authority_s_own_root() {
     let none = AuthorizedWorkspace::default();
     assert!(none.read(&target.to_string_lossy()).is_err());
 }
+
+/// A model id does not grant disk or network authority to an automation client.
+#[test]
+fn generative_model_management_requires_explicit_desktop_authority() {
+    for id in ["ai.models.install", "ai.models.import", "ai.models.remove"] {
+        for params in [serde_json::json!({"modelId": "lama"}), serde_json::json!({"modelId": "lama", "path": "/outside/model.onnx"})] {
+            assert!(authorize_engine_command(id, &params).is_err(), "untrusted model command was allowed: {id}");
+            assert!(authorize_desktop_engine_command(id, &params).is_err(), "desktop automation model command was allowed: {id}");
+        }
+    }
+    for id in ["ai.models.list", "remove.capabilities"] {
+        assert!(authorize_engine_command(id, &serde_json::json!({})).is_ok(), "model capability queries should be readable");
+    }
+}

@@ -4415,3 +4415,34 @@ layerLabel	No Color	Sem cor
 	Font size presets	Predefinições de tamanho da fonte
 	Leading presets	Predefinições de entrelinha
 	Tracking presets	Predefinições de tracking
+
+# Local Remove model manager
+	Generative Remove Models…	Modelos de remoção generativa…
+	Generative Remove Models	Modelos de remoção generativa
+	Method:	Método:
+	Classical	Clássico
+	Models…	Modelos…
+	Enable local AI removal	Ativar remoção por IA local
+	In use	Em uso
+	Installed	Instalado
+	Not installed	Não instalado
+	Enable this process	Ativar este processo
+	Selected model	Modelo selecionado
+	Model source and license	Origem e licença do modelo
+	Model download source	Origem do download do modelo
+	Download	Baixar
+	Install from file…	Instalar de arquivo…
+	Remove model	Remover modelo
+	Cancel model operation	Cancelar operação do modelo
+	Model installation cancelled	Instalação do modelo cancelada
+	Model removed	Modelo removido
+	Model installed and verified	Modelo instalado e verificado
+	local AI processing is disabled	o processamento de IA local está desativado
+	the selected model is not yet qualified for Automatic Remove	o modelo selecionado ainda não foi qualificado para remoção automática
+	Choose which local models may process your images. A brush stroke never downloads a model.	Escolha os modelos locais que podem processar suas imagens. Uma pincelada nunca baixa um modelo.
+	Local AI inference is unavailable in this build. Classical Remove remains available.	A inferência de IA local não está disponível nesta versão. A remoção clássica continua disponível.
+	Model installation is unavailable in this session.	A instalação de modelos não está disponível nesta sessão.
+	Settings take effect immediately. Downloads continue while this window is closed.	As configurações entram em vigor imediatamente. Os downloads continuam após fechar esta janela.
+	Settings take effect immediately.	As configurações entram em vigor imediatamente.
+	Local background reconstruction; 512 px context, CPU processing	Reconstrução local do fundo; contexto de 512 px, processamento por CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Reconstrução local compacta; fluxo MI-GAN anterior, contexto de 512 px na CPU

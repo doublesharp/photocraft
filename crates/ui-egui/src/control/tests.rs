@@ -2085,3 +2085,65 @@ fn ui_set_mask_target_ends_a_filter_mask_view() {
     let photocraft_doc::LayerContent::Smart(sm) = &l.content else { panic!("smart object") };
     assert_eq!(sm.filter_mask.as_ref().unwrap().value(20, 20), 1.0, "not into the filter mask");
 }
+
+#[test]
+fn remove_options_are_drivable_and_invalid_updates_are_atomic() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let good = call(
+        &mut app,
+        &ctx,
+        "ui.set",
+        json!({
+            "tool":"remove", "removeMethod":"auto", "removeSampleAllLayers":true,
+            "removeNewLayer":true, "removeAfterEachStroke":false
+        }),
+    );
+    assert_eq!(good["ok"], true, "{good}");
+    let seen = call(&mut app, &ctx, "ui.inspect", json!({}));
+    assert_eq!(seen["result"]["remove"]["method"], "auto");
+    assert_eq!(seen["result"]["remove"]["pendingStrokes"], 0);
+    assert_eq!(seen["result"]["toolOptions"]["remove_new_layer"], true);
+    for invalid in [json!({"removeMethod":"unknown"}), json!({"removeMethod":1}), json!({"removeNewLayer":"yes"})] {
+        let mut params = invalid.as_object().unwrap().clone();
+        params.insert("removeAfterEachStroke".into(), json!(true));
+        assert_eq!(call(&mut app, &ctx, "ui.set", Value::Object(params))["ok"], false);
+        assert!(!app.ui.tool_options.remove_after_each_stroke, "invalid calls change nothing");
+    }
+    assert_eq!(app.ui.tool_options.remove_method, "auto");
+}
+
+#[test]
+fn remove_model_manager_is_reachable_from_preferences_route() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let before = app.session.prefs_value();
+    let item = crate::menus::menu_items(&app).into_iter().find(|item| item.id == "edit.preferences.generativeRemove").unwrap();
+    assert!(item.enabled);
+    let result = call(&mut app, &ctx, "ui.menu.invoke", json!({"id":"edit.preferences.generativeRemove"}));
+    assert_eq!(result["ok"], true, "{result}");
+    let seen = call(&mut app, &ctx, "ui.inspect", json!({}));
+    assert!(seen["result"]["dialogs"].as_array().unwrap().iter().any(|d| d["fields"]["__prefsui"] == "removeModels"));
+    assert_eq!(app.session.prefs_value(), before);
+    assert!(!app.session.has_jobs());
+}
+
+#[test]
+fn remove_control_result_is_visible_in_ui_inspection() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width":32,"height":32})).unwrap();
+    let result = call(
+        &mut app,
+        &ctx,
+        "engine.execute",
+        json!({
+            "command":"paint.remove", "params":{"method":"auto", "points":[[10,10],[15,10]], "size":4}
+        }),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["result"]["effectiveMethod"], "classical");
+    let seen = call(&mut app, &ctx, "ui.inspect", json!({}));
+    assert_eq!(seen["result"]["remove"]["lastResult"]["effectiveMethod"], "classical");
+    assert!(seen["result"]["remove"]["lastResult"]["fallbackReason"].as_str().unwrap().contains("disabled"));
+}

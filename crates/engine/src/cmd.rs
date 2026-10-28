@@ -109,6 +109,7 @@ pub mod magnetic_cmds;
 pub mod mask_view_cmds;
 pub(super) mod migrate_cmds;
 pub mod mode_cmds;
+pub mod model_cmds;
 pub mod multichannel_cmds;
 pub mod notes_cmds;
 mod ops;
@@ -1240,6 +1241,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::actions_edit_cmds::specs());
     v.extend(crate::swatch_cmds::specs());
     v.extend(crate::retouch_cmds::specs());
+    v.extend(crate::model_cmds::specs());
     v.extend(crate::redeye_cmds::specs());
     v.extend(crate::image_cmds::specs());
     v.extend(crate::perspective_crop_cmds::specs());

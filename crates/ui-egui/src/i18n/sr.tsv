@@ -4557,3 +4557,34 @@ shape	Appearance	Izgled
 	Font size presets	Unapred podešene veličine fonta
 	Leading presets	Unapred podešeni proredi
 	Tracking presets	Unapred podešeni razmaci slova
+
+# Local Remove model manager
+	Generative Remove Models…	Modeli generativnog uklanjanja…
+	Generative Remove Models	Modeli generativnog uklanjanja
+	Method:	Metod:
+	Classical	Klasični
+	Models…	Modeli…
+	Enable local AI removal	Uključi lokalno uklanjanje pomoću AI
+	In use	U upotrebi
+	Installed	Instalirano
+	Not installed	Nije instalirano
+	Enable this process	Uključi ovaj proces
+	Selected model	Izabrani model
+	Model source and license	Izvor i licenca modela
+	Model download source	Izvor preuzimanja modela
+	Download	Preuzmi
+	Install from file…	Instaliraj iz datoteke…
+	Remove model	Ukloni model
+	Cancel model operation	Otkaži radnju nad modelom
+	Model installation cancelled	Instalacija modela je otkazana
+	Model removed	Model je uklonjen
+	Model installed and verified	Model je instaliran i proveren
+	local AI processing is disabled	lokalna AI obrada je isključena
+	the selected model is not yet qualified for Automatic Remove	izabrani model još nije odobren za automatsko uklanjanje
+	Choose which local models may process your images. A brush stroke never downloads a model.	Izaberite lokalne modele koji mogu da obrađuju slike. Potez četkicom nikada ne preuzima model.
+	Local AI inference is unavailable in this build. Classical Remove remains available.	Lokalna AI obrada nije dostupna u ovoj verziji. Klasično uklanjanje ostaje dostupno.
+	Model installation is unavailable in this session.	Instalacija modela nije dostupna u ovoj sesiji.
+	Settings take effect immediately. Downloads continue while this window is closed.	Postavke važe odmah. Preuzimanja se nastavljaju i kada zatvorite ovaj prozor.
+	Settings take effect immediately.	Postavke važe odmah.
+	Local background reconstruction; 512 px context, CPU processing	Lokalna rekonstrukcija pozadine; kontekst od 512 px, obrada na CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Kompaktna lokalna rekonstrukcija; stariji MI-GAN postupak, kontekst od 512 px na CPU

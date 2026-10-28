@@ -2434,3 +2434,657 @@ fn periodic_clone_interior_matches_ordinary_brush_masks_and_transparency() {
         }
     }
 }
+
+#[test]
+fn remove_ai_requires_explicitly_enabled_processing_and_preserves_the_document() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let before = rgba(&s, 46, 30);
+    let past = s.active().unwrap().history.past_len();
+    let err = s.execute("paint.remove", json!({"points": [[38, 30], [54, 30]], "size": 16, "method": "ai"})).unwrap_err();
+    assert!(err.to_string().contains("disabled"), "{err}");
+    assert_eq!(rgba(&s, 46, 30), before);
+    assert_eq!(s.active().unwrap().history.past_len(), past);
+}
+
+#[test]
+fn remove_rejects_unknown_methods_before_editing() {
+    let mut s = square_session(8, "rgb");
+    let before = rgba(&s, 46, 30);
+    for method in [json!("diffusion"), json!(false), json!({}), json!(123)] {
+        let err = s.execute("paint.remove", json!({"points": [[38, 30], [54, 30]], "size": 16, "method": method})).unwrap_err();
+        assert!(err.to_string().contains("method"), "{err}");
+    }
+    assert_eq!(rgba(&s, 46, 30), before);
+}
+
+#[test]
+fn remove_auto_reports_its_classical_fallback_without_downloading_a_model() {
+    let mut s = square_session(8, "rgb");
+    let r = s.execute("paint.remove", json!({"points": [[38, 30], [54, 30]], "size": 16, "method": "auto"})).unwrap();
+    assert_eq!(r["effectiveMethod"], "classical");
+    assert!(r["fallbackReason"].as_str().is_some_and(|s| s.contains("disabled")), "{r}");
+    assert!(near(rgba(&s, 46, 30), rgba(&s, 10, 10), 0.03));
+}
+
+// The runtime admits one model operation per process; keep independent engine tests from
+// racing the deliberately noninterruptible test worker.
+fn lock_ai_tests() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[derive(Default)]
+struct SolidRemoval(std::sync::Mutex<Vec<photocraft_ml::RemovalInput>>);
+
+impl photocraft_ml::RemovalBackend for SolidRemoval {
+    fn ready(&self, id: &str) -> bool {
+        id == "lama"
+    }
+    fn infer(
+        &self,
+        _: &str,
+        input: &photocraft_ml::RemovalInput,
+        _: &dyn photocraft_ml::RemovalControl,
+    ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+        self.0.lock().unwrap().push(input.clone());
+        Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+    }
+}
+
+fn enable_solid_removal(s: &mut Session) -> std::sync::Arc<SolidRemoval> {
+    let backend = std::sync::Arc::new(SolidRemoval::default());
+    s.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::default().with_backend(backend.clone())));
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabled", "value":true})).unwrap();
+    backend
+}
+
+#[test]
+fn remove_ai_blends_fractional_selection_once_and_undoes_at_native_depths() {
+    let _guard = lock_ai_tests();
+    for depth in [8, 16] {
+        for new_layer in [false, true] {
+            let mut s = square_session(depth, "rgb");
+            let backend = enable_solid_removal(&mut s);
+            s.edit("selection", |doc, _| {
+                let mut selection = Surface::new(PixelFormat::GRAY8);
+                selection.write_region(Rect::new(46, 30, 47, 31), &[0.5]);
+                doc.selection = Some(selection);
+                Ok(())
+            })
+            .unwrap();
+            let before = s.active().unwrap().doc.clone();
+            let old = rgba(&s, 46, 30);
+            let untouched = rgba(&s, 45, 30);
+            let past = s.active().unwrap().history.past_len();
+            let result = s.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai","newLayer":new_layer})).unwrap();
+            assert_eq!(result["effectiveMethod"], "ai");
+            assert_eq!(result["modelId"], "lama");
+            assert_eq!(s.active().unwrap().history.past_len(), past + 1);
+            let got = rgba(&s, 46, 30);
+            if new_layer {
+                assert!((got[0] - 0.9).abs() < tol(depth));
+                assert!((got[3] - 0.5).abs() < 0.01, "selection applies once: {got:?}");
+                assert_eq!(rgba(&s, 45, 30)[3], 0.0);
+            } else {
+                assert!((got[0] - (old[0] + (0.9 - old[0]) * (128.0 / 255.0))).abs() < 0.01, "{got:?}");
+                assert_eq!(rgba(&s, 45, 30), untouched);
+            }
+            let inputs = backend.0.lock().unwrap();
+            assert_eq!(inputs.len(), 1);
+            assert_eq!(inputs[0].mask.iter().filter(|v| **v > 0.0).count(), 1, "protected context remains known");
+            drop(inputs);
+            assert!(s.undo());
+            assert_eq!(s.active().unwrap().doc, before);
+        }
+    }
+}
+
+#[test]
+fn remove_ai_rejects_incompatible_context_and_hostile_options_before_editing() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    let before = s.active().unwrap().doc.clone();
+    for extra in [
+        json!({"method":"ai","modelId":"unknown"}),
+        json!({"method":"ai","modelId":5}),
+        json!({"method":"ai","newLayer":"yes"}),
+        json!({"method":"ai","removeEffects":true}),
+        json!({"method":"classical","modelId":"lama"}),
+        json!({"method":"auto","closeLoops":null}),
+    ] {
+        let mut p = json!({"points":[[46,30]],"size":10});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        assert!(s.execute("paint.remove", p).is_err(), "{extra}");
+    }
+    assert!(backend.0.lock().unwrap().is_empty());
+    assert_eq!(s.active().unwrap().doc, before);
+    let mut hdr = square_session(32, "rgb");
+    enable_solid_removal(&mut hdr);
+    let result = hdr.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai"}));
+    assert!(result.unwrap_err().to_string().contains("depth"));
+}
+
+#[test]
+fn remove_ai_uses_an_enabled_model_and_auto_discloses_unqualified_fallback() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabledModels", "value":[]})).unwrap();
+    let p = json!({"points":[[46,30]], "size":10, "method":"ai"});
+    assert!(s.execute("paint.remove", p.clone()).unwrap_err().to_string().contains("disabled"));
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabledModels", "value":["lama"]})).unwrap();
+    let auto = s.execute("paint.remove", json!({"points":[[46,30]], "size":10, "method":"auto"})).unwrap();
+    assert_eq!(auto["effectiveMethod"], "classical");
+    assert!(auto["fallbackReason"].as_str().unwrap().contains("qualified"));
+    assert!(backend.0.lock().unwrap().is_empty());
+    s.undo();
+    s.execute("paint.remove", p).unwrap();
+    let (_, recorded) = s.journal.last().unwrap();
+    assert_eq!(recorded["method"], "ai");
+    assert_eq!(recorded["modelId"], "lama");
+    assert!(recorded["modelSha256"].as_str().is_some_and(|v| v.len() == 64));
+}
+
+#[test]
+fn remove_ai_cancellation_discards_late_output_and_keeps_runtime_busy_until_drain() {
+    let _guard = lock_ai_tests();
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
+    struct Blocking {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl photocraft_ml::RemovalBackend for Blocking {
+        fn ready(&self, id: &str) -> bool {
+            id == "lama"
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+        }
+    }
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut s = square_session(8, "rgb");
+    let backend = Arc::new(Blocking { entered: entered_tx, release: Mutex::new(release_rx) });
+    s.set_removal_service(Arc::new(photocraft_ml::RemovalService::default().with_backend(backend)));
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":true})).unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let p = json!({"points":[[46,30]],"size":10,"method":"ai"});
+    let job = match s.start("paint.remove", p.clone()).unwrap() {
+        crate::jobs::Started::Job(id) => id,
+        _ => panic!("expected background job"),
+    };
+    entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(s.cancel_job(job));
+    let mut another = square_session(8, "rgb");
+    let other_backend = enable_solid_removal(&mut another);
+    assert!(another.execute("paint.remove", p.clone()).unwrap_err().to_string().contains("busy"));
+    assert!(other_backend.0.lock().unwrap().is_empty(), "a different session must share the worker permit");
+    release_tx.send(()).unwrap();
+    s.join_cancelled_jobs();
+    s.poll_jobs();
+    assert_eq!(s.active().unwrap().doc, before);
+    assert_eq!(another.execute("paint.remove", p).unwrap()["effectiveMethod"], "ai");
+    assert_eq!(other_backend.0.lock().unwrap().len(), 1);
+}
+
+/// Opt-in real installed artifact -> Session edit -> model removal -> undo/redo. This verifies
+/// the native integration, separately from the mock adapter lifecycle tests above.
+#[cfg(feature = "native-inference")]
+#[test]
+#[ignore = "requires PHOTOCRAFT_TEST_LAMA pointing to the pinned 208 MB model artifact"]
+fn remove_ai_real_installed_model_applies_and_undoes_without_model_access() {
+    let _guard = lock_ai_tests();
+    use std::{path::PathBuf, sync::Arc};
+    let model = PathBuf::from(std::env::var_os("PHOTOCRAFT_TEST_LAMA").expect("set PHOTOCRAFT_TEST_LAMA"));
+    let dir = tempfile::tempdir().unwrap();
+    let service = Arc::new(photocraft_ml::RemovalService::new(Some(dir.path().into())));
+    service.import("lama", &model, &photocraft_ml::NoopControl).unwrap();
+    let mut s = square_session(8, "rgb");
+    s.set_removal_service(service.clone());
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":true})).unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let result = s.execute("paint.remove", json!({"points":[[38,30],[54,30]],"size":16,"method":"ai"})).unwrap();
+    assert_eq!(result["modelId"], "lama");
+    eprintln!(
+        "real LaMa engine edit: crop={}, scale={}, load_ms={}, forward_ms={}, estimated_working_bytes={}",
+        result["crop"], result["inferenceScale"], result["loadMs"], result["forwardMs"], result["estimatedWorkingSetBytes"]
+    );
+    let after = s.active().unwrap().doc.clone();
+    assert_ne!(before, after);
+    service.remove("lama").unwrap();
+    assert!(s.undo());
+    assert_eq!(s.active().unwrap().doc, before);
+    assert!(s.redo());
+    assert_eq!(s.active().unwrap().doc, after);
+}
+
+#[test]
+fn remove_ai_requires_opaque_known_context_but_can_fill_an_empty_sampled_layer() {
+    let _guard = lock_ai_tests();
+    let mut transparent_context = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut transparent_context);
+    transparent_context
+        .edit("transparent context", |doc, active| {
+            let surface = doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap();
+            surface.write_region(Rect::new(10, 10, 11, 11), &[0.1, 0.1, 0.1, 0.0]);
+            Ok(())
+        })
+        .unwrap();
+    let before = transparent_context.active().unwrap().doc.clone();
+    let err = transparent_context.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai"})).unwrap_err();
+    assert!(err.to_string().contains("opaque"), "{err}");
+    assert!(backend.0.lock().unwrap().is_empty());
+    assert_eq!(transparent_context.active().unwrap().doc, before);
+
+    for locked in [false, true] {
+        let mut s = square_session(8, "rgb");
+        enable_solid_removal(&mut s);
+        s.execute("layer.new.layer", json!({})).unwrap();
+        if locked {
+            s.edit("lock", |doc, active| {
+                doc.layer_mut(active.unwrap()).unwrap().locks.transparency = true;
+                Ok(())
+            })
+            .unwrap();
+        }
+        let before = s.active().unwrap().doc.clone();
+        s.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai","sampleAllLayers":true})).unwrap();
+        assert_eq!(rgba(&s, 46, 30)[3], if locked { 0.0 } else { 1.0 });
+        assert!(s.undo());
+        assert_eq!(s.active().unwrap().doc, before);
+    }
+}
+
+#[test]
+fn remove_ai_rejects_nonfinite_selection_coverage_before_inference() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    s.edit("bad selection", |doc, _| {
+        let mut selection = Surface::new(PixelFormat::new(ColorMode::Grayscale, SampleType::F32, false));
+        selection.write_region(Rect::new(46, 30, 47, 31), &[0.5]);
+        selection.write_region(Rect::new(45, 30, 46, 31), &[f32::NAN]);
+        doc.selection = Some(selection);
+        Ok(())
+    })
+    .unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let error = s.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai"})).unwrap_err().to_string();
+    assert!(error.contains("selection coverage"), "{error}");
+    assert!(backend.0.lock().unwrap().is_empty());
+    assert_eq!(s.active().unwrap().doc, before);
+}
+
+#[test]
+fn remove_ai_discards_result_if_untagged_working_profile_changes() {
+    let _guard = lock_ai_tests();
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
+    struct Blocking {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl photocraft_ml::RemovalBackend for Blocking {
+        fn ready(&self, id: &str) -> bool {
+            id == "lama"
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+        }
+    }
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut s = square_session(8, "rgb");
+    s.set_removal_service(Arc::new(
+        photocraft_ml::RemovalService::default().with_backend(Arc::new(Blocking { entered: entered_tx, release: Mutex::new(release_rx) })),
+    ));
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":true})).unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let job = match s.start("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai"})).unwrap() {
+        crate::jobs::Started::Job(id) => id,
+        _ => panic!("expected background job"),
+    };
+    entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    s.color.settings.working_rgb = "display-p3".into();
+    release_tx.send(()).unwrap();
+    assert!(s.wait_job(job).unwrap_err().to_string().contains("profile"));
+    assert_eq!(s.active().unwrap().doc, before);
+}
+
+#[test]
+fn remove_ai_crop_contains_the_complete_scattered_brush_footprint() {
+    let _guard = lock_ai_tests();
+    let mut s = session(512, 512, 8, "rgb");
+    enable_solid_removal(&mut s);
+    s.tools.brush.scattering.enabled = true;
+    s.tools.brush.scattering.scatter.jitter = 10.0;
+    s.tools.brush.scattering.both_axes = true;
+    s.tools.brush.scattering.count = 16;
+    let p = json!({"points":[[256,256]],"size":20,"method":"ai"});
+    let (stroke, _) = parse_brush(&s, &p, "paint.remove").unwrap();
+    let (bounds, footprint) = super::coverage("paint.remove", &stroke).unwrap();
+    let result = s.execute("paint.remove", p).unwrap();
+    let crop = result["crop"].as_array().unwrap();
+    let x = crop[0].as_i64().unwrap() as i32;
+    let y = crop[1].as_i64().unwrap() as i32;
+    let window = Rect::new(x, y, x + crop[2].as_i64().unwrap() as i32, y + crop[3].as_i64().unwrap() as i32);
+    for (i, c) in footprint.iter().enumerate().filter(|(_, c)| **c > 0.0) {
+        let px = bounds.x0 + (i % bounds.width() as usize) as i32;
+        let py = bounds.y0 + (i / bounds.width() as usize) as i32;
+        assert!(window.contains(px, py), "painted pixel ({px},{py}) escaped inference crop {window:?}, coverage {c}");
+    }
+}
+
+#[test]
+fn remove_ai_rejects_invalid_adapter_metadata_without_editing() {
+    let _guard = lock_ai_tests();
+    struct BadTiming;
+    impl photocraft_ml::RemovalBackend for BadTiming {
+        fn ready(&self, id: &str) -> bool {
+            id == "lama"
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: f64::NAN, forward_ms: 0.0 })
+        }
+    }
+    let mut s = square_session(8, "rgb");
+    s.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::default().with_backend(std::sync::Arc::new(BadTiming))));
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":true})).unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let error = s.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai"})).unwrap_err().to_string();
+    assert!(error.contains("invalid") || error.contains("malformed"), "{error}");
+    assert_eq!(s.active().unwrap().doc, before);
+}
+
+#[test]
+fn remove_ai_rejects_too_small_memory_budget_before_backend_or_edit() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    s.execute("prefs.set", json!({"path":"performance.memoryUsageMb", "value":256})).unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let history = s.active().unwrap().history.past_len();
+    let error = s.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai"})).unwrap_err().to_string();
+    assert!(error.to_lowercase().contains("memory") || error.to_lowercase().contains("budget"), "{error}");
+    assert!(backend.0.lock().unwrap().is_empty(), "the backend must never run without admission");
+    assert_eq!(s.active().unwrap().doc, before);
+    assert_eq!(s.active().unwrap().history.past_len(), history);
+}
+
+/// A 24 MP source demonstrates that a small repair passes only a bounded region to inference.
+/// Run explicitly: setup intentionally constructs a large real document.
+#[test]
+#[ignore = "24 MP regional-allocation and timing probe"]
+fn remove_ai_small_crop_on_a_24mp_document() {
+    let _guard = lock_ai_tests();
+    let mut s = session(6000, 4000, 8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    let started = std::time::Instant::now();
+    let result = s.execute("paint.remove", json!({"points":[[3000,2000]],"size":16,"method":"ai"})).unwrap();
+    let elapsed = started.elapsed();
+    let recorded = backend.0.lock().unwrap();
+    let crop = recorded.first().unwrap();
+    let crop_pixels = u64::from(crop.width) * u64::from(crop.height);
+    assert!(crop_pixels < 50_000, "small repair allocated a {crop_pixels}-pixel model input");
+    assert_eq!(crop.rgb.len() as u64, crop_pixels * 3);
+    assert_eq!(crop.mask.len() as u64, crop_pixels);
+    assert_eq!(result["effectiveMethod"], "ai");
+    let transient = result["estimatedTransientBytes"].as_u64().unwrap();
+    let working_set = result["estimatedWorkingSetBytes"].as_u64().unwrap();
+    assert!(transient >= crop_pixels * 28, "admission covers RGB input, mask and RGB output");
+    assert!(transient < 256 * 1024 * 1024, "a small crop should not reserve a document-sized buffer");
+    assert_eq!(working_set, 3072 * 1024 * 1024 + transient);
+    eprintln!(
+        "24 MP regional mock: crop={}x{}, crop_pixels={}, input_bytes={}, estimated_transient_bytes={}, elapsed_ms={:.2}",
+        crop.width,
+        crop.height,
+        crop_pixels,
+        (crop.rgb.len() + crop.mask.len()) * std::mem::size_of::<f32>(),
+        transient,
+        elapsed.as_secs_f64() * 1000.0
+    );
+}
+
+#[test]
+fn remove_ai_freezes_its_memory_budget_at_submission() {
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
+    let _guard = lock_ai_tests();
+    struct Blocking {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl photocraft_ml::RemovalBackend for Blocking {
+        fn ready(&self, id: &str) -> bool {
+            id == "lama"
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.9; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+        }
+    }
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut s = square_session(8, "rgb");
+    s.set_removal_service(Arc::new(
+        photocraft_ml::RemovalService::default().with_backend(Arc::new(Blocking { entered: entered_tx, release: Mutex::new(release_rx) })),
+    ));
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":true})).unwrap();
+    let job = match s.start("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai"})).unwrap() {
+        crate::jobs::Started::Job(id) => id,
+        _ => panic!("expected background job"),
+    };
+    entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    s.execute("prefs.set", json!({"path":"performance.memoryUsageMb","value":256})).unwrap();
+    release_tx.send(()).unwrap();
+    let result = s.wait_job(job).unwrap();
+    assert_eq!(result["effectiveMethod"], "ai");
+    assert_eq!(result["memoryBudgetBytes"], 8192_u64 * 1024 * 1024);
+}
+
+#[test]
+fn remove_ai_sample_all_rejects_unqualified_composite_before_inference() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.edit("complex sample", |doc, _| {
+        doc.layers.first_mut().unwrap().blend = BlendMode::Multiply;
+        Ok(())
+    })
+    .unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let error = s.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai","sampleAllLayers":true})).unwrap_err().to_string();
+    assert!(error.contains("simple raster composite"), "{error}");
+    assert!(backend.0.lock().unwrap().is_empty());
+    assert_eq!(s.active().unwrap().doc, before);
+
+    s.edit("mismatched sample format", |doc, _| {
+        let base = doc.layers.first_mut().unwrap();
+        base.blend = BlendMode::Normal;
+        base.content = LayerContent::Raster(Surface::new(PixelFormat::GRAY8));
+        Ok(())
+    })
+    .unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let error = s.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai","sampleAllLayers":true})).unwrap_err().to_string();
+    assert!(error.contains("simple raster composite"), "{error}");
+    assert!(backend.0.lock().unwrap().is_empty());
+    assert_eq!(s.active().unwrap().doc, before);
+}
+
+#[test]
+fn remove_ai_budget_rejection_does_not_drop_a_floating_selection() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    s.execute("prefs.set", json!({"path":"performance.memoryUsageMb","value":256})).unwrap();
+    s.execute("select.rect", json!({"x":40,"y":24,"width":12,"height":12})).unwrap();
+    s.execute("select.float", json!({"dx":3,"dy":0})).unwrap();
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some());
+    let before = s.active().unwrap().doc.clone();
+    let history = s.active().unwrap().history.past_len();
+    let error = s.execute("paint.remove", json!({"points":[[46,30]],"size":10,"method":"ai"})).unwrap_err().to_string();
+    assert!(error.to_lowercase().contains("budget"), "{error}");
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some());
+    assert_eq!(s.active().unwrap().doc, before);
+    assert_eq!(s.active().unwrap().history.past_len(), history);
+    assert!(backend.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn remove_ai_unpolled_output_retains_admission_until_apply_or_discard() {
+    use std::time::{Duration, Instant};
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    let other = photocraft_ml::RemovalService::default().with_backend(std::sync::Arc::new(SolidRemoval::default()));
+    let params = json!({"points":[[46,30]],"size":10,"method":"ai"});
+    for (index, discard) in [false, true].into_iter().enumerate() {
+        let job = match s.start("paint.remove", params.clone()).unwrap() {
+            crate::jobs::Started::Job(id) => id,
+            _ => panic!("expected background job"),
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !s.test_job_worker_finished(job) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(s.test_job_worker_finished(job), "worker did not finish");
+        assert_eq!(backend.0.lock().unwrap().len(), index + 1, "inference did not complete");
+        assert!(matches!(other.admit("lama", 0, u64::MAX), Err(photocraft_ml::Error::Busy)), "unpolled result released its reservation");
+        if discard {
+            assert!(s.cancel_job(job));
+        } else {
+            s.wait_job(job).unwrap();
+        }
+        assert!(other.admit("lama", 0, u64::MAX).is_ok(), "result did not release its reservation");
+    }
+}
+
+#[test]
+fn remove_ai_frozen_stroke_brush_does_not_follow_the_current_tool() {
+    let _guard = lock_ai_tests();
+    let mut s = session(256, 256, 8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    let mut brush = stroke_brush(&s.tools.brush, &json!({"size":20}));
+    brush.tip = photocraft_paint::TipShape::Sampled(photocraft_paint::GrayTile::from_fn(8, 8, |x, y| if x < 3 && y < 6 { 1.0 } else { 0.0 }));
+    brush.roundness = 0.25;
+    brush.scattering.enabled = true;
+    brush.scattering.scatter.jitter = 2.0;
+    brush.scattering.count = 4;
+    let snapshot = remove_brush_snapshot(&brush).unwrap();
+    let entry = json!({"points":[[128,128]],"brush":snapshot});
+    s.tools.brush.roundness = 1.0;
+    s.tools.brush.scattering.enabled = false;
+    let p = json!({"strokes":[entry],"method":"ai"});
+    s.execute("paint.remove", p.clone()).unwrap();
+    assert!(s.undo());
+    s.tools.brush.size = 4.0;
+    s.tools.brush.scattering.enabled = true;
+    s.tools.brush.scattering.scatter.jitter = 8.0;
+    s.execute("paint.remove", p).unwrap();
+    let inputs = backend.0.lock().unwrap();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!((inputs[0].width, inputs[0].height), (inputs[1].width, inputs[1].height));
+    assert_eq!(inputs[0].mask, inputs[1].mask);
+}
+
+#[test]
+fn remove_ai_recorded_action_freezes_the_single_stroke_brush() {
+    let _guard = lock_ai_tests();
+    let mut s = session(256, 256, 8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    s.tools.brush.tip = photocraft_paint::TipShape::Sampled(photocraft_paint::GrayTile::from_fn(8, 8, |x, y| if x < 3 && y < 6 { 1.0 } else { 0.0 }));
+    s.tools.brush.roundness = 0.3;
+    s.tools.brush.scattering.enabled = true;
+    s.tools.brush.scattering.scatter.jitter = 2.0;
+    s.tools.brush.scattering.count = 4;
+    s.execute("actions.record", json!({"name":"Frozen remove"})).unwrap();
+    s.execute("paint.remove", json!({"points":[[128,128]],"size":20,"method":"ai"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert!(s.undo());
+    s.tools.brush.tip = photocraft_paint::TipShape::Round;
+    s.tools.brush.roundness = 1.0;
+    s.tools.brush.scattering.enabled = false;
+    s.tools.brush.size = 2.0;
+    let replay = s.execute("actions.play", json!({"action":"Frozen remove"})).unwrap();
+    assert!(replay.get("failed").is_none(), "{replay}");
+    let inputs = backend.0.lock().unwrap();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!((inputs[0].width, inputs[0].height), (inputs[1].width, inputs[1].height));
+    assert_eq!(inputs[0].mask, inputs[1].mask);
+}
+
+#[test]
+fn remove_ai_rejects_unknown_or_oversized_brush_data_before_inference() {
+    let _guard = lock_ai_tests();
+    let mut s = square_session(8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    let before = s.active().unwrap().doc.clone();
+    let good = remove_brush_snapshot(&stroke_brush(&s.tools.brush, &json!({"size":10}))).unwrap();
+    let mut too_large = s.tools.brush.clone();
+    too_large.tip = photocraft_paint::TipShape::Sampled(photocraft_paint::GrayTile { width: u32::MAX, height: u32::MAX, data: vec![0].into() });
+    assert!(remove_brush_snapshot(&too_large).is_err(), "UI snapshot must reject oversized bitmap dimensions before serialization");
+    let mut unknown = good.clone();
+    unknown["scattering"]["mystery"] = json!(true);
+    let mut oversized = good.clone();
+    oversized["tip"] = json!({"sampled":{"width":4096,"height":4096,"data":"AA=="}});
+    let mut extra_bitmap_key = good;
+    extra_bitmap_key["tip"] = json!({"sampled":{"width":1,"height":1,"data":"AAA=","unexpected":true}});
+    for brush in [unknown, oversized, extra_bitmap_key] {
+        let result = s.execute("paint.remove", json!({"points":[[46,30]],"method":"ai","brush":brush}));
+        assert!(result.is_err(), "invalid brush was accepted");
+    }
+    assert!(backend.0.lock().unwrap().is_empty());
+    assert_eq!(s.active().unwrap().doc, before);
+}
+
+#[test]
+fn remove_ai_recorded_action_freezes_multiple_stroke_brushes() {
+    let _guard = lock_ai_tests();
+    let mut s = session(256, 256, 8, "rgb");
+    let backend = enable_solid_removal(&mut s);
+    s.tools.brush.tip = photocraft_paint::TipShape::Sampled(photocraft_paint::GrayTile::from_fn(8, 8, |x, y| if x < 3 && y < 6 { 1.0 } else { 0.0 }));
+    s.tools.brush.scattering.enabled = true;
+    s.tools.brush.scattering.scatter.jitter = 2.0;
+    s.execute("actions.record", json!({"name":"Frozen multiple"})).unwrap();
+    s.execute("paint.remove", json!({"strokes":[[[105,128]],{"points":[[150,128]],"size":16}],"size":20,"method":"ai"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert!(s.undo());
+    s.tools.brush.tip = photocraft_paint::TipShape::Round;
+    s.tools.brush.scattering.enabled = false;
+    let replay = s.execute("actions.play", json!({"action":"Frozen multiple"})).unwrap();
+    assert!(replay.get("failed").is_none(), "{replay}");
+    let inputs = backend.0.lock().unwrap();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!((inputs[0].width, inputs[0].height), (inputs[1].width, inputs[1].height));
+    assert_eq!(inputs[0].mask, inputs[1].mask);
+}

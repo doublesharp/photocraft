@@ -3509,3 +3509,34 @@ curves	Smooth	Glätten
 	Font size presets	Schriftgrößen-Vorgaben
 	Leading presets	Zeilenabstand-Vorgaben
 	Tracking presets	Laufweiten-Vorgaben
+
+# Local Remove model manager
+	Generative Remove Models…	Modelle für generatives Entfernen…
+	Generative Remove Models	Modelle für generatives Entfernen
+	Method:	Methode:
+	Classical	Klassisch
+	Models…	Modelle…
+	Enable local AI removal	Lokales KI-Entfernen aktivieren
+	In use	In Verwendung
+	Installed	Installiert
+	Not installed	Nicht installiert
+	Enable this process	Diesen Prozess aktivieren
+	Selected model	Ausgewähltes Modell
+	Model source and license	Modellquelle und Lizenz
+	Model download source	Downloadquelle des Modells
+	Download	Herunterladen
+	Install from file…	Aus Datei installieren…
+	Remove model	Modell entfernen
+	Cancel model operation	Modellvorgang abbrechen
+	Model installation cancelled	Modellinstallation abgebrochen
+	Model removed	Modell entfernt
+	Model installed and verified	Modell installiert und überprüft
+	local AI processing is disabled	die lokale KI-Verarbeitung ist deaktiviert
+	the selected model is not yet qualified for Automatic Remove	das ausgewählte Modell ist noch nicht für automatisches Entfernen qualifiziert
+	Choose which local models may process your images. A brush stroke never downloads a model.	Wähle lokale Modelle zur Bildbearbeitung. Ein Pinselstrich lädt niemals ein Modell herunter.
+	Local AI inference is unavailable in this build. Classical Remove remains available.	Lokale KI-Inferenz ist in diesem Build nicht verfügbar. Klassisches Entfernen bleibt verfügbar.
+	Model installation is unavailable in this session.	Die Modellinstallation ist in dieser Sitzung nicht verfügbar.
+	Settings take effect immediately. Downloads continue while this window is closed.	Einstellungen gelten sofort. Downloads laufen nach dem Schließen dieses Fensters weiter.
+	Settings take effect immediately.	Einstellungen gelten sofort.
+	Local background reconstruction; 512 px context, CPU processing	Lokale Hintergrundrekonstruktion; 512 px Kontext, CPU-Verarbeitung
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Kompakte lokale Rekonstruktion; ältere MI-GAN-Pipeline, 512 px Kontext auf der CPU

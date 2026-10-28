@@ -15,6 +15,10 @@ mod batch;
 mod document;
 mod error;
 mod output;
+mod processing_preferences;
+// Share the native transport and directory policy with the desktop app.
+#[path = "../../photocraft/src/model_services.rs"]
+mod model_services;
 
 pub use actions::{ActionsError, Steps, load_actions, load_actions_file, parse_actions};
 use args::{Command, parse};

@@ -116,6 +116,7 @@ pub use cmd::magnetic_cmds;
 pub use cmd::mask_view_cmds;
 use cmd::migrate_cmds;
 pub use cmd::mode_cmds;
+pub use cmd::model_cmds;
 pub use cmd::multichannel_cmds;
 pub use cmd::notes_cmds;
 pub use cmd::paint_cmds;
@@ -189,6 +190,9 @@ pub struct Session {
     /// switch away and back inside one pass). UI work that must not cross documents (control
     /// screenshots, automation input) binds to it.
     active_generation: u64,
+    /// Removal queues bind to transitions of their target and processing preferences, including
+    /// transitions that return to their original value within a nested action or script.
+    remove_context_generation: u64,
     /// The document id [`Self::active_generation`] was last bumped for.
     active_doc_for_generation: Option<photocraft_doc::DocId>,
     pub tools: ToolState,
@@ -219,6 +223,8 @@ pub struct Session {
     filter_mask_layer: Option<LayerId>,
     /// Edit › Preferences, keyboard shortcuts, menu and toolbar customisation (see `prefs`).
     pub prefs: prefs::PrefsStore,
+    /// Shared local model service injected by the native application.
+    removal_service: Arc<photocraft_ml::RemovalService>,
     /// Release checks use an injected platform transport; no network I/O in the engine.
     pub updates: updates_cmds::Updates,
     /// Edit menu state: Fade source, custom shape library (see `edit_menu_cmds`).

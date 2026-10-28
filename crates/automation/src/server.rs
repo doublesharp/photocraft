@@ -334,7 +334,8 @@ pub struct UiSetParams {
     /// brushesView, brushPicker ([x, y] opens the Brush Preset picker there, null closes it),
     /// brushPickerName, brushPickerStroke, brushPickerTip (the picker card's parts, at least one
     /// on), brushPickerScale (the picker footer's card-scale slider, 0.15 to 2, 1 the standard),
-    /// brushSize, gradientBlendMode
+    /// brushSize, removeMethod ("classical", "auto" or "ai"), removeSampleAllLayers (bool),
+    /// removeNewLayer (bool), removeAfterEachStroke (bool), gradientBlendMode
     /// (a blend mode name, for the Gradient tool), gradientClassic (bool), eyedropperSampleSize
     /// ("point" or 1, 3, 5, 11, 31, 51, 101), eyedropperSample (current, currentAndBelow, all,
     /// allNoAdjustments, currentAndBelowNoAdjustments), eyedropperRing (bool), cropOverlay (thirds,

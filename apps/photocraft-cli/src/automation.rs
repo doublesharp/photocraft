@@ -3,7 +3,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 
 use serde_json::Value;
 
-use photocraft_automation::{Headless, PhotocraftMcp, security};
+use photocraft_automation::{AuthorizedWorkspace, Backend, Headless, PhotocraftMcp, security};
+use std::sync::{Arc, Mutex};
 
 use crate::{
     Result,
@@ -32,9 +33,16 @@ pub(crate) fn commands(a: &CommandsArgs, out: &mut dyn Write) -> Result {
     Ok(())
 }
 
+/// Both server transports use the same untrusted authorization gate and may read installed
+/// model data through the app-selected service; they cannot administer that directory.
+fn headless_with_models(workspace: AuthorizedWorkspace) -> Headless {
+    let mut headless = Headless::with_workspace(workspace);
+    crate::model_services::configure(&mut headless.session);
+    headless
+}
+
 pub(crate) fn serve(a: &ServeArgs, err: &mut dyn Write) -> Result {
-    use std::sync::{Arc, Mutex};
-    let h = Arc::new(Mutex::new(Headless::with_workspace(a.automation.workspace()?)));
+    let h = Arc::new(Mutex::new(headless_with_models(a.automation.workspace()?)));
     match a.port {
         Some(port) => {
             if a.port_from_env {
@@ -75,8 +83,43 @@ pub(crate) fn mcp(a: &McpArgs, err: &mut dyn Write) -> Result {
             let token = security::client_token(a.control.control_token.as_deref(), a.control.control_token_file.as_deref())?;
             PhotocraftMcp::bridge(&addr.to_string(), &token)?
         }
-        None => PhotocraftMcp::headless_with_workspace(a.automation.workspace()?),
+        None => PhotocraftMcp::with_backend(Backend::Headless(Arc::new(Mutex::new(headless_with_models(a.automation.workspace()?))))),
     };
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     Ok(rt.block_on(server.serve_stdio())?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    struct InstalledModel;
+    impl photocraft_ml::RemovalBackend for InstalledModel {
+        fn ready(&self, id: &str) -> bool {
+            id == "lama"
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.25; input.rgb.len()], inference_scale: 1.0, load_ms: 0.0, forward_ms: 0.0 })
+        }
+    }
+
+    #[test]
+    fn server_session_can_infer_with_installed_model_but_cannot_manage_models() {
+        let mut h = headless_with_models(AuthorizedWorkspace::default());
+        h.session.set_removal_service(Arc::new(photocraft_ml::RemovalService::default().with_backend(Arc::new(InstalledModel))));
+        let models = h.command_run("ai.models.list", json!({})).unwrap();
+        assert_eq!(models["managementAvailable"], false);
+        assert!(h.command_run("ai.models.install", json!({"modelId":"lama"})).is_err());
+        h.command_run("prefs.set", json!({"path":"generativeRemove.enabled", "value":true})).unwrap();
+        h.command_run("file.new", json!({"width":64,"height":64})).unwrap();
+        let result = h.command_run("paint.remove", json!({"points":[[32,32]],"size":8,"method":"ai"})).unwrap();
+        assert_eq!(result["effectiveMethod"], "ai");
+        assert_eq!(result["modelId"], "lama");
+    }
 }

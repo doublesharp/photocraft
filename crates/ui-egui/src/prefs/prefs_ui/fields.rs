@@ -17,6 +17,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
             let system = system_theme(app, ui.ctx());
             prefs_body(ui, f, system);
         }
+        "removeModels" => super::models::body(app, ui, f),
         "shortcuts" => shortcuts_body(app, ui, f),
         "presets" => presets_body(app, ui, f),
         "presetsIO" => presets_io_body(ui, f),

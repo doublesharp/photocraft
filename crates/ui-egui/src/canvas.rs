@@ -760,6 +760,25 @@ fn handle_dialog_canvas_input(app: &mut PhotocraftApp, input: DialogCanvasInput<
     }
 }
 
+/// Keep a refused Remove press refused until its release, even when the job ends mid-gesture.
+fn guard_remove_press(app: &mut PhotocraftApp, ctx: &egui::Context, response: &egui::Response, tool: Tool, buttons: &mut crate::paint_mouse::Buttons) {
+    let key = egui::Id::unique(("remove-busy-press", ctx.viewport_id()));
+    if tool == Tool::Remove && app.session.active_job().is_some() && response.is_pointer_button_down_on() && ctx.input(|i| i.pointer.primary_pressed()) {
+        ctx.data_mut(|data| data.insert_temp(key, true));
+        app.ui.status = tl!("Remove is processing. Wait for it to finish or cancel the operation.").into();
+        app.ui.status_error = false;
+    }
+    if ctx.data(|data| data.get_temp::<bool>(key)).unwrap_or(false) {
+        buttons.started = false;
+        buttons.dragged = false;
+        buttons.stopped = false;
+        buttons.clicked = false;
+        if ctx.input(|i| i.pointer.primary_released() || !i.pointer.primary_down()) {
+            ctx.data_mut(|data| data.remove_temp::<bool>(key));
+        }
+    }
+}
+
 struct CanvasToolInput<'a> {
     ctx: &'a egui::Context,
     response: &'a egui::Response,
@@ -792,6 +811,7 @@ fn handle_primary_canvas_input(app: &mut PhotocraftApp, ui: &mut egui::Ui, view:
     // (Preferences › Tools, `paint_mouse`).
     crate::paint_mouse::sync_tool_brush(app);
     let mut buttons = crate::paint_mouse::canvas_buttons(app, response, tool);
+    guard_remove_press(app, ctx, response, tool, &mut buttons);
     // The Crop tool's frame is edited from the press (before egui's drag threshold), so the
     // pixels past the canvas show at once, as in Photoshop.
     if tool == Tool::Crop && response.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_down()) && crate::crop_ui::press(app) {

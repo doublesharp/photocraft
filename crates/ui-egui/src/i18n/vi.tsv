@@ -3983,3 +3983,34 @@ curves	Smooth	Làm mượt
 	Font size presets	Cỡ chữ đặt sẵn
 	Leading presets	Giãn dòng đặt sẵn
 	Tracking presets	Khoảng cách chữ đặt sẵn
+
+# Local Remove model manager
+	Generative Remove Models…	Mô hình xóa tạo sinh…
+	Generative Remove Models	Mô hình xóa tạo sinh
+	Method:	Phương pháp:
+	Classical	Cổ điển
+	Models…	Mô hình…
+	Enable local AI removal	Bật xóa bằng AI cục bộ
+	In use	Đang sử dụng
+	Installed	Đã cài đặt
+	Not installed	Chưa cài đặt
+	Enable this process	Bật xử lý này
+	Selected model	Mô hình đã chọn
+	Model source and license	Nguồn và giấy phép mô hình
+	Model download source	Nguồn tải mô hình
+	Download	Tải xuống
+	Install from file…	Cài đặt từ tệp…
+	Remove model	Xóa mô hình
+	Cancel model operation	Hủy thao tác mô hình
+	Model installation cancelled	Đã hủy cài đặt mô hình
+	Model removed	Đã xóa mô hình
+	Model installed and verified	Đã cài đặt và xác minh mô hình
+	local AI processing is disabled	xử lý AI cục bộ đã tắt
+	the selected model is not yet qualified for Automatic Remove	mô hình đã chọn chưa được xác nhận cho tính năng xóa tự động
+	Choose which local models may process your images. A brush stroke never downloads a model.	Chọn mô hình cục bộ có thể xử lý ảnh của bạn. Một nét cọ không bao giờ tải mô hình.
+	Local AI inference is unavailable in this build. Classical Remove remains available.	Suy luận AI cục bộ không khả dụng trong bản dựng này. Tính năng xóa cổ điển vẫn khả dụng.
+	Model installation is unavailable in this session.	Không thể cài đặt mô hình trong phiên này.
+	Settings take effect immediately. Downloads continue while this window is closed.	Cài đặt có hiệu lực ngay. Quá trình tải tiếp tục khi đóng cửa sổ này.
+	Settings take effect immediately.	Cài đặt có hiệu lực ngay.
+	Local background reconstruction; 512 px context, CPU processing	Tái tạo nền cục bộ; vùng ngữ cảnh 512 px, xử lý bằng CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Tái tạo cục bộ gọn nhẹ; quy trình MI-GAN cũ, vùng ngữ cảnh 512 px trên CPU

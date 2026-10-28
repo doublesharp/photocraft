@@ -26,6 +26,7 @@ pub fn is_live(id: &str) -> bool {
         || panel_alias(id).is_some()
         || workspace_name(id).is_some()
         || proof_preset(id).is_some()
+        || id == "edit.preferences.generativeRemove"
         || id == "view.proofSetup.custom"
         || crate::view_cmds::handles(id)
         || crate::analysis_ui::handles(id)
@@ -40,6 +41,7 @@ pub fn is_live(id: &str) -> bool {
 /// catalogue spells it differently (Filter › "Other…").
 const PLACE_AFTER: &[(&str, &str)] = &[
     ("file.newFromClipboard", "file.new"),
+    ("edit.preferences.generativeRemove", "edit.preferences.integrations"),
     ("filter.render.relight", "filter.render.lightingEffects"),
     ("view.resetView", "view.flipHorizontal"),
     ("filter.other.colorToAlpha", "filter.other.offset"),
@@ -63,7 +65,15 @@ pub fn menu_items(app: &PhotocraftApp) -> Vec<MenuItem> {
         })
         .collect();
     // 2) Our commands that Photoshop's tree doesn't list (or lists under another id).
-    let mut extra: Vec<MenuItem> = Vec::new();
+    let mut extra: Vec<MenuItem> = vec![MenuItem {
+        id: "edit.preferences.generativeRemove".into(),
+        label: "Generative Remove Models…".into(),
+        path: vec!["Edit".into(), "Preferences".into()],
+        shortcut: None,
+        enabled: is_enabled(app, "edit.preferences.generativeRemove"),
+        checked: None,
+        color: None,
+    }];
     for &(id, label, path, sc) in UI_COMMANDS {
         extra.push(MenuItem {
             id: id.into(),

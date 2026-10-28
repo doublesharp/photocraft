@@ -1083,11 +1083,27 @@ impl LayerMaskOverlay {
     }
 }
 
+/// Explicit, opt-in local model choices. Model bytes are stored by platform services.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GenerativeRemove {
+    pub enabled: bool,
+    pub enabled_models: Vec<String>,
+    pub selected_model: String,
+}
+
+impl Default for GenerativeRemove {
+    fn default() -> Self {
+        Self { enabled: false, enabled_models: vec!["lama".into()], selected_model: "lama".into() }
+    }
+}
+
 /// All preferences. JSON keys are the `edit.preferences.<section>` ids.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Preferences {
     pub general: General,
+    pub generative_remove: GenerativeRemove,
     pub interface: Interface,
     pub workspace: Workspace,
     pub tools: Tools,
@@ -1294,7 +1310,11 @@ impl Session {
 
     /// Change preferences and apply the engine-side ones.
     pub fn edit_prefs<R>(&mut self, f: impl FnOnce(&mut Preferences) -> R) -> R {
+        let removal = self.prefs().generative_remove.clone();
         let r = self.prefs.edit(f);
+        if self.prefs().generative_remove != removal {
+            self.note_remove_context_change();
+        }
         self.apply_prefs();
         r
     }

@@ -18,6 +18,8 @@ pub struct ToolOptions {
     /// Remove tool: each stroke is filled when released (Photoshop's default). Off, the strokes
     /// collect as a tint on the canvas and ↩ applies them together (Esc drops them).
     pub remove_after_each_stroke: bool,
+    /// Local Remove backend: classical (legacy default), auto, or explicitly AI.
+    pub remove_method: String,
     pub feather: f32,
     /// linear | radial | angle | reflected | diamond
     pub gradient_style: String,
@@ -360,6 +362,7 @@ impl Default for ToolOptions {
             object_finder: true,
             remove_new_layer: false,
             remove_after_each_stroke: true,
+            remove_method: "classical".into(),
             feather: 0.0,
             gradient_style: "linear".into(),
             gradient_reverse: false,

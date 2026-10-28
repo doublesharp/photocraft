@@ -3507,3 +3507,44 @@ curves	Smooth	Haluskan
 	Font size presets	Preset ukuran font
 	Leading presets	Preset leading
 	Tracking presets	Preset tracking
+
+# Local Remove model manager
+	Generative Remove Models…	Model Penghapusan Generatif…
+	Generative Remove Models	Model Penghapusan Generatif
+	Method:	Metode:
+	Classical	Klasik
+	Models…	Model…
+	Enable local AI removal	Aktifkan penghapusan AI lokal
+	In use	Sedang digunakan
+	Installed	Terpasang
+	Not installed	Belum terpasang
+	Enable this process	Aktifkan proses ini
+	Selected model	Model terpilih
+	Model source and license	Sumber dan lisensi model
+	Model download source	Sumber unduhan model
+	Download	Unduh
+	Install from file…	Pasang dari berkas…
+	Remove model	Hapus model
+	Cancel model operation	Batalkan operasi model
+	Model installation cancelled	Pemasangan model dibatalkan
+	Model removed	Model dihapus
+	Model installed and verified	Model dipasang dan diverifikasi
+	Local AI inference is unavailable in this build. Classical Remove remains available.	Inferensi AI lokal tidak tersedia pada versi ini. Penghapusan klasik tetap tersedia.
+	Model installation is unavailable in this session.	Pemasangan model tidak tersedia dalam sesi ini.
+	Choose which local models may process your images. A brush stroke never downloads a model.	Pilih model lokal yang dapat memproses gambar Anda. Sapuan kuas tidak pernah mengunduh model.
+	Settings take effect immediately. Downloads continue while this window is closed.	Pengaturan langsung berlaku. Unduhan berlanjut setelah jendela ini ditutup.
+	The model operation continues while this window is closed.	Operasi model berlanjut setelah jendela ini ditutup.
+	Choose a model file to install.	Pilih berkas model untuk dipasang.
+	Settings take effect immediately.	Pengaturan langsung berlaku.
+	No model file was selected	Tidak ada berkas model yang dipilih
+	Local model installation requires a desktop file path	Pemasangan model lokal memerlukan jalur berkas desktop
+	Remove is processing. Wait for it to finish or cancel the operation.	Penghapusan sedang diproses. Tunggu hingga selesai atau batalkan operasi.
+	Remove was cancelled because its source or settings changed.	Penghapusan dibatalkan karena sumber atau pengaturan berubah.
+	model is not installed	model belum terpasang
+	native AI inference is unavailable in this build	inferensi AI native tidak tersedia pada versi ini
+	model storage is unavailable	penyimpanan model tidak tersedia
+	AI removal is unavailable in the browser	penghapusan AI tidak tersedia di browser
+	Local background reconstruction; 512 px context, CPU processing	Rekonstruksi latar lokal; konteks 512 px, pemrosesan CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Rekonstruksi lokal ringkas; alur MI-GAN lama, konteks CPU 512 px
+	local AI processing is disabled	pemrosesan AI lokal dinonaktifkan
+	the selected model is not yet qualified for Automatic Remove	model yang dipilih belum memenuhi syarat untuk Penghapusan Otomatis

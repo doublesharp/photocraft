@@ -353,6 +353,8 @@ pub struct PhotocraftApp {
     pub(crate) remove_pending: Vec<serde_json::Value>,
     pub(crate) remove_pending_target: Option<retouch_ui::RemoveTarget>,
     pub(crate) remove_trail: Option<stroke_trail::Trail>,
+    /// Effective method, model and fallback from the last completed Remove operation.
+    pub(crate) remove_last_result: Option<serde_json::Value>,
     /// The open menus' items, reused between frames (`menus::ItemCache`).
     pub(crate) menu_cache: Option<menus::ItemCache>,
     /// Move tool drag shown live (`move_ui`).

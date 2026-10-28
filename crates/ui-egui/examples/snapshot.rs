@@ -6,6 +6,9 @@
 //!     --script '[["ui.set", {"tool": "type"}], ["ui.menu.invoke", {"id": "image.imageSize"}]]'
 //! ```
 //!
+//! The Remove model manager can be reached without a window or model download:
+//! `--script '[["ui.set", {"tool":"remove"}], ["ui.menu.invoke", {"id":"edit.preferences.generativeRemove"}]]'`
+//!
 //! `--system-theme light|dark|none` supplies a deterministic OS appearance for theme captures.
 //!
 //! `--safe-gpu` draws the canvas on the CPU path, like the app's `--safe-gpu` launch.

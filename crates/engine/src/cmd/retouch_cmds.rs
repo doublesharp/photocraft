@@ -32,6 +32,25 @@ mod pattern_stamp;
 pub use pattern_stamp::live_impressionist as live_pattern_impressionist;
 mod periodic;
 mod remove;
+
+/// Capture an effective Remove brush for a queued stroke or replay. Bitmap and serialized-size
+/// limits are checked before serialization; the returned value can be used as `brush`.
+pub fn remove_brush_snapshot(brush: &BrushSettings) -> Result<Value> {
+    remove::brush_snapshot(brush)
+}
+
+/// Refuse excessive Remove dab work before a live or queued tint allocates renderer buffers.
+/// Uses the same untimed point contract and work limit as `paint.remove` preflight.
+pub fn check_remove_stroke(brush: &BrushSettings, points: &[[f64; 3]]) -> Result<()> {
+    remove::check_stroke_work(brush, points)
+}
+
+pub(crate) fn removal_context_reason(s: &Session, p: &Value) -> Option<String> {
+    remove::context_reason(s, p)
+}
+pub(crate) fn validate_remove_options(s: &Session, p: &Value) -> Result<()> {
+    remove::validate_options(s, p)
+}
 pub use content_aware_move::{ContentAwarePreview, preview as content_aware_move_preview};
 pub use patch::preview as patch_preview;
 
@@ -150,6 +169,10 @@ pub fn stroke_brush(base: &BrushSettings, p: &Value) -> BrushSettings {
 /// Parse the shared brush params into a stroke on a layer (`None` when an alpha channel or the
 /// Quick Mask is targeted).
 fn parse_brush(s: &Session, p: &Value, cmd: &str) -> Result<(Stroke, Option<LayerId>)> {
+    parse_brush_with(s, p, cmd, None)
+}
+
+fn parse_brush_with(s: &Session, p: &Value, cmd: &str, explicit: Option<BrushSettings>) -> Result<(Stroke, Option<LayerId>)> {
     let pts: Vec<StrokePoint> = p
         .get("points")
         .and_then(Value::as_array)
@@ -164,7 +187,7 @@ fn parse_brush(s: &Session, p: &Value, cmd: &str) -> Result<(Stroke, Option<Laye
         return Err(bad(cmd, "`points` is empty"));
     }
     crate::brush_cmds::check_coords(&pts, cmd)?;
-    let brush = stroke_brush(&s.tools.brush, p);
+    let brush = explicit.unwrap_or_else(|| stroke_brush(&s.tools.brush, p));
     crate::brush_cmds::validate_brush(&brush, cmd)?;
     if crate::channel_cmds::is_channel_target(p) {
         return Ok((Stroke { brush, points: pts }, None));
@@ -303,7 +326,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: brush_params!(
-                r#","strokes":[[[x,y,pressure?],…]|{"points":[…],"size"?,"hardness"?,"spacing"?},…]? (several strokes removed together, as one job and one undo step, each with its own size, hardness and spacing when given; else "points"),"closeLoops":bool=true (a stroke around an object removes what it encloses),"sampleAllLayers":bool=false,"newLayer":bool=false (the fill goes to a new layer above the target, which stays as it was) → {"damage","layer"?} (a background job)"#
+                r#","brush":full BrushSettings? (explicit method only; authoritative over scalar brush fields),"strokes":[[[x,y,pressure?],…]|{"points":[…],"brush":full BrushSettings?,"size"?,"hardness"?,"spacing"?},…]? (several strokes removed together, as one job and one undo step; per-stroke brush overrides a shared brush),"closeLoops":bool=true (a stroke around an object removes what it encloses),"sampleAllLayers":bool=false,"newLayer":bool=false (the fill goes to a new layer above the target, which stays as it was),"method":"classical|auto|ai"? (omitted preserves legacy behavior),"modelId":catalog id?,"modelSha256":pinned hash?,"seed":u64?,"removeEffects":false → {"damage","layer"?} (a background job)"#
             ),
             enabled: has_pixel_layer,
             run: remove::remove,

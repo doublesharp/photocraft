@@ -4688,3 +4688,44 @@ shape	Appearance	Оформление
 	Font size presets	Наборы размеров шрифта
 	Leading presets	Наборы интерлиньяжа
 	Tracking presets	Наборы трекинга
+
+# Local Remove model manager
+	Generative Remove Models…	Модели генеративного удаления…
+	Generative Remove Models	Модели генеративного удаления
+	Method:	Метод:
+	Classical	Классический
+	Models…	Модели…
+	Enable local AI removal	Включить локальное удаление с ИИ
+	In use	Используется
+	Installed	Установлена
+	Not installed	Не установлена
+	Enable this process	Включить обработку
+	Selected model	Выбранная модель
+	Model source and license	Источник и лицензия модели
+	Model download source	Источник загрузки модели
+	Download	Загрузить
+	Install from file…	Установить из файла…
+	Remove model	Удалить модель
+	Cancel model operation	Отменить операцию с моделью
+	Model installation cancelled	Установка модели отменена
+	Model removed	Модель удалена
+	Model installed and verified	Модель установлена и проверена
+	Local AI inference is unavailable in this build. Classical Remove remains available.	Локальный ИИ недоступен в этой сборке. Классическое удаление по-прежнему доступно.
+	Model installation is unavailable in this session.	Установка моделей недоступна в этом сеансе.
+	Choose which local models may process your images. A brush stroke never downloads a model.	Выберите локальные модели для обработки изображений. Мазок кистью никогда не загружает модель.
+	Settings take effect immediately. Downloads continue while this window is closed.	Настройки применяются сразу. Загрузка продолжается после закрытия окна.
+	The model operation continues while this window is closed.	Операция с моделью продолжается после закрытия окна.
+	Choose a model file to install.	Выберите файл модели для установки.
+	Settings take effect immediately.	Настройки применяются сразу.
+	No model file was selected	Файл модели не выбран
+	Local model installation requires a desktop file path	Для установки локальной модели нужен путь к файлу на компьютере
+	Remove is processing. Wait for it to finish or cancel the operation.	Выполняется удаление. Дождитесь завершения или отмените операцию.
+	Remove was cancelled because its source or settings changed.	Удаление отменено, поскольку изменились источник или настройки.
+	model is not installed	модель не установлена
+	native AI inference is unavailable in this build	нативный ИИ недоступен в этой сборке
+	model storage is unavailable	хранилище моделей недоступно
+	AI removal is unavailable in the browser	удаление с ИИ недоступно в браузере
+	Local background reconstruction; 512 px context, CPU processing	Локальное восстановление фона; контекст 512 пикс., обработка на CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Компактное локальное восстановление; прежний процесс MI-GAN, контекст 512 пикс. на CPU
+	local AI processing is disabled	локальная обработка ИИ отключена
+	the selected model is not yet qualified for Automatic Remove	выбранная модель ещё не допущена для автоматического удаления

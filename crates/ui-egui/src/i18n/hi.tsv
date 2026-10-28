@@ -563,3 +563,34 @@ cameraRaw	Yellow	पीला
 	Target	लक्ष्य
 	Units	इकाइयाँ
 	Demosaic	डिमोज़ेक
+
+# Local Remove model manager
+	Generative Remove Models…	जनरेटिव हटाने के मॉडल…
+	Generative Remove Models	जनरेटिव हटाने के मॉडल
+	Method:	विधि:
+	Classical	पारंपरिक
+	Models…	मॉडल…
+	Enable local AI removal	स्थानीय AI हटाना सक्षम करें
+	In use	उपयोग में
+	Installed	इंस्टॉल किया गया
+	Not installed	इंस्टॉल नहीं किया गया
+	Enable this process	यह प्रक्रिया सक्षम करें
+	Selected model	चयनित मॉडल
+	Model source and license	मॉडल का स्रोत और लाइसेंस
+	Model download source	मॉडल डाउनलोड स्रोत
+	Download	डाउनलोड
+	Install from file…	फ़ाइल से इंस्टॉल करें…
+	Remove model	मॉडल हटाएं
+	Cancel model operation	मॉडल कार्रवाई रद्द करें
+	Model installation cancelled	मॉडल इंस्टॉलेशन रद्द किया गया
+	Model removed	मॉडल हटा दिया गया
+	Model installed and verified	मॉडल इंस्टॉल और सत्यापित किया गया
+	local AI processing is disabled	स्थानीय AI प्रोसेसिंग बंद है
+	the selected model is not yet qualified for Automatic Remove	चयनित मॉडल अभी स्वचालित हटाने के लिए योग्य नहीं है
+	Choose which local models may process your images. A brush stroke never downloads a model.	तय करें कि कौन से स्थानीय मॉडल आपकी छवियां प्रोसेस कर सकते हैं। ब्रश स्ट्रोक कभी मॉडल डाउनलोड नहीं करता।
+	Local AI inference is unavailable in this build. Classical Remove remains available.	इस बिल्ड में स्थानीय AI उपलब्ध नहीं है। पारंपरिक हटाना उपलब्ध रहता है।
+	Model installation is unavailable in this session.	इस सत्र में मॉडल इंस्टॉल करना उपलब्ध नहीं है।
+	Settings take effect immediately. Downloads continue while this window is closed.	सेटिंग तुरंत लागू होती हैं। यह विंडो बंद होने पर भी डाउनलोड जारी रहते हैं।
+	Settings take effect immediately.	सेटिंग तुरंत लागू होती हैं।
+	Local background reconstruction; 512 px context, CPU processing	स्थानीय पृष्ठभूमि पुनर्निर्माण; 512 px संदर्भ, CPU प्रोसेसिंग
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	कॉम्पैक्ट स्थानीय पुनर्निर्माण; पुरानी MI-GAN प्रक्रिया, CPU पर 512 px संदर्भ

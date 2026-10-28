@@ -446,7 +446,10 @@ fn button_row(
             tl!("Cancel")
         };
         let cancel = DialogButton::new(ButtonRole::Cancel, cancel_label, 84.0);
-        let clicked = if d.kind == DialogKind::Command && crate::prefs_ui::is_preferences(fields) {
+        let clicked = if d.kind == DialogKind::Command && fields.get("__prefsui").and_then(Value::as_str) == Some("removeModels") {
+            // Model changes apply immediately; there is no draft to cancel.
+            dialog_buttons(ui, &[DialogButton::new(ButtonRole::Default, tl!("Close"), 84.0)])
+        } else if d.kind == DialogKind::Command && crate::prefs_ui::is_preferences(fields) {
             let changed = crate::prefs_ui::preferences_changed(app, fields);
             dialog_buttons(ui, &[ok, cancel, DialogButton::new(ButtonRole::Apply, tl!("Apply"), 84.0).enabled(changed)])
         } else if crate::mask_trash_prompt::owns(fields) && !crate::mask_trash_prompt::is_vector(fields) {

@@ -527,6 +527,14 @@ pub(super) fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter
             let Some(st) = app.session.active() else { return };
             let size = [st.doc.size.width, st.doc.size.height];
             let doc_rect = xf.doc_rect(st.doc.bounds());
+            if t == Tool::Remove
+                && app.trail.as_ref().is_none_or(|trail| trail.needs_points(d.points.len()))
+                && let Err(error) = photocraft_engine::retouch_cmds::check_remove_stroke(d.remove_brush.as_ref().unwrap_or(&app.session.tools.brush), &d.points)
+            {
+                app.ui.status = error.to_string();
+                app.ui.status_error = true;
+                return;
+            }
             let trail = app.trail.get_or_insert_with(|| crate::stroke_trail::Trail::new(size));
             let brush = || photocraft_engine::retouch_cmds::stroke_brush(&app.session.tools.brush, &json!({}));
             match t {
@@ -534,7 +542,7 @@ pub(super) fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter
                 Tool::QuickSelection => trail.feed(&d.points, app.session.tools.brush.size),
                 // Remove removes every pixel a dab touches, so its whole reach is tinted: a soft
                 // tip's reaches well past the nominal radius.
-                Tool::Remove => trail.feed_reach(&d.points, brush),
+                Tool::Remove => trail.feed_reach(&d.points, || d.remove_brush.clone().unwrap_or_else(brush)),
                 // What the stroke covers, dab by dab: soft edges, pressure and shape dynamics
                 // (Spot Healing #2364; the Mixer Brush, and a tool whose live stroke didn't start).
                 _ => trail.feed_dabs(&d.points, brush),

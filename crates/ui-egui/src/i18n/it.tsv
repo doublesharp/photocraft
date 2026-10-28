@@ -4602,3 +4602,34 @@ shape	Appearance	Aspetto
 	Font size presets	Predefiniti dimensione font
 	Leading presets	Predefiniti interlinea
 	Tracking presets	Predefiniti spaziatura
+
+# Local Remove model manager
+	Generative Remove Models…	Modelli di rimozione generativa…
+	Generative Remove Models	Modelli di rimozione generativa
+	Method:	Metodo:
+	Classical	Classico
+	Models…	Modelli…
+	Enable local AI removal	Abilita rimozione IA locale
+	In use	In uso
+	Installed	Installato
+	Not installed	Non installato
+	Enable this process	Abilita questo processo
+	Selected model	Modello selezionato
+	Model source and license	Origine e licenza del modello
+	Model download source	Origine del download del modello
+	Download	Scarica
+	Install from file…	Installa da file…
+	Remove model	Rimuovi modello
+	Cancel model operation	Annulla operazione sul modello
+	Model installation cancelled	Installazione del modello annullata
+	Model removed	Modello rimosso
+	Model installed and verified	Modello installato e verificato
+	local AI processing is disabled	l’elaborazione IA locale è disattivata
+	the selected model is not yet qualified for Automatic Remove	il modello selezionato non è ancora qualificato per la rimozione automatica
+	Choose which local models may process your images. A brush stroke never downloads a model.	Scegli i modelli locali che possono elaborare le immagini. Una pennellata non scarica mai un modello.
+	Local AI inference is unavailable in this build. Classical Remove remains available.	L’inferenza IA locale non è disponibile in questa versione. La rimozione classica rimane disponibile.
+	Model installation is unavailable in this session.	L’installazione dei modelli non è disponibile in questa sessione.
+	Settings take effect immediately. Downloads continue while this window is closed.	Le impostazioni hanno effetto immediato. I download continuano dopo la chiusura della finestra.
+	Settings take effect immediately.	Le impostazioni hanno effetto immediato.
+	Local background reconstruction; 512 px context, CPU processing	Ricostruzione locale dello sfondo; contesto di 512 px, elaborazione CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Ricostruzione locale compatta; precedente pipeline MI-GAN, contesto di 512 px su CPU

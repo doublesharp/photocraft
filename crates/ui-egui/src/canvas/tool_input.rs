@@ -53,6 +53,9 @@ fn tool_move(app: &mut PhotocraftApp, x: f64, y: f64, pressure: f32, mods: egui:
 }
 
 fn preflight_tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) -> Option<(bool, egui::Modifiers)> {
+    if remove_gesture_is_busy(app, ev) {
+        return None;
+    }
     // A press anywhere but on a guide deselects the selected guide (`guide_select`).
     if let ToolEvent::Down { x, y, .. } = ev
         && app.ui.selected_guide.is_some()
@@ -291,6 +294,34 @@ fn handle_move_pointer(app: &mut PhotocraftApp, ev: ToolEvent, tool: Tool, mods:
 }
 
 /// Tool state machine. Shared by mouse input and automation.
+fn remove_press_snapshot(app: &PhotocraftApp, tool: Tool) -> (Option<crate::retouch_ui::RemoveTarget>, Option<photocraft_paint::BrushSettings>) {
+    if tool == Tool::Remove {
+        (crate::retouch_ui::remove_target(app), Some(photocraft_engine::retouch_cmds::stroke_brush(&app.session.tools.brush, &json!({}))))
+    } else {
+        (None, None)
+    }
+}
+
+/// A busy Remove job freezes its document; reject input before any gesture is captured.
+fn remove_gesture_is_busy(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
+    if app.active_tool() != Tool::Remove || app.session.active_job().is_none() {
+        return false;
+    }
+    if matches!(ev, ToolEvent::Down { .. }) {
+        app.brush_resize_armed = false;
+        app.secondary_erase = false;
+        app.ui.status = tl!("Remove is processing. Wait for it to finish or cancel the operation.").into();
+        app.ui.status_error = false;
+    }
+    if app.drag.as_ref().is_some_and(|drag| drag.tool == Tool::Remove) {
+        app.drag = None;
+        app.trail = None;
+        app.live_stroke = None;
+        app.session.clear_live_stroke();
+    }
+    true
+}
+
 pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
     let Some((armed, mods)) = preflight_tool_event(app, ev, mods) else { return };
     let Some((raw, ev, mods)) = filter_event_before_tool(app, ev, mods, armed) else { return };
@@ -473,7 +504,8 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             }
             // ⌥ flips Dodge/Burn and Blur/Sharpen for this stroke.
             let tool = crate::retouch_ui::alt_flipped(tool, mods.alt);
-            app.drag = Some(Drag { clear, ..Drag::new(tool, from.map_or([x, y], |p| [p[0], p[1]]), points, mods, erase) });
+            let (remove_target, remove_brush) = remove_press_snapshot(app, tool);
+            app.drag = Some(Drag { clear, remove_target, remove_brush, ..Drag::new(tool, from.map_or([x, y], |p| [p[0], p[1]]), points, mods, erase) });
             app.trail = None;
             app.stylus.begin_stroke();
             if from.is_some() {

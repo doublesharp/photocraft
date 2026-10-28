@@ -43,6 +43,7 @@ pub(crate) fn convert(a: &ConvertArgs, _out: &mut dyn Write, err: &mut dyn Write
 pub(crate) fn info(a: &InfoArgs, out: &mut dyn Write) -> Result {
     let file = &a.file;
     let mut h = Headless::trusted_local();
+    crate::model_services::configure(&mut h.session);
     let opened = h.open(file)?;
     let mut doc = h.inspect(None)?;
     let mut warnings = opened["warnings"].as_array().cloned().unwrap_or_default();
@@ -75,6 +76,7 @@ fn command_list(a: &RunArgs) -> Result<Vec<(String, Value)>> {
 pub(crate) fn run_cmds(a: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result {
     let opts = ExportOptions::from(&a.export);
     let mut h = Headless::trusted_local();
+    crate::processing_preferences::configure(&mut h.session).map_err(photocraft_engine::EngineError::Other)?;
     // Opening, running commands and exporting can all notice the same missing font:
     // one `run` invocation reports each warning line at most once.
     let mut reported_fonts = std::collections::HashSet::<String>::new();

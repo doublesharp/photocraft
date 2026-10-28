@@ -4235,3 +4235,44 @@ cameraRaw	Dehaze	Odstranění oparu
 	Font size presets	Předvolby velikosti písma
 	Leading presets	Předvolby prokladu
 	Tracking presets	Předvolby prostrkání
+
+# Local Remove model manager
+	Generative Remove Models…	Modely generativního odstranění…
+	Generative Remove Models	Modely generativního odstranění
+	Method:	Metoda:
+	Classical	Klasická
+	Models…	Modely…
+	Enable local AI removal	Povolit místní odstranění pomocí AI
+	In use	Používá se
+	Installed	Nainstalováno
+	Not installed	Není nainstalováno
+	Enable this process	Povolit toto zpracování
+	Selected model	Vybraný model
+	Model source and license	Zdroj a licence modelu
+	Model download source	Zdroj stažení modelu
+	Download	Stáhnout
+	Install from file…	Instalovat ze souboru…
+	Remove model	Odstranit model
+	Cancel model operation	Zrušit operaci s modelem
+	Model installation cancelled	Instalace modelu zrušena
+	Model removed	Model odstraněn
+	Model installed and verified	Model nainstalován a ověřen
+	Local AI inference is unavailable in this build. Classical Remove remains available.	Místní AI není v tomto sestavení dostupná. Klasické odstranění zůstává dostupné.
+	Model installation is unavailable in this session.	Instalace modelů není v této relaci dostupná.
+	Choose which local models may process your images. A brush stroke never downloads a model.	Vyberte místní modely pro zpracování obrázků. Tah štětcem nikdy nestáhne model.
+	Settings take effect immediately. Downloads continue while this window is closed.	Nastavení se projeví okamžitě. Stahování pokračuje i po zavření tohoto okna.
+	The model operation continues while this window is closed.	Operace s modelem pokračuje i po zavření tohoto okna.
+	Choose a model file to install.	Vyberte soubor modelu k instalaci.
+	Settings take effect immediately.	Nastavení se projeví okamžitě.
+	No model file was selected	Nebyl vybrán soubor modelu
+	Local model installation requires a desktop file path	Instalace místního modelu vyžaduje cestu k souboru v počítači
+	Remove is processing. Wait for it to finish or cancel the operation.	Probíhá odstranění. Počkejte na dokončení nebo operaci zrušte.
+	Remove was cancelled because its source or settings changed.	Odstranění bylo zrušeno, protože se změnil zdroj nebo nastavení.
+	model is not installed	model není nainstalován
+	native AI inference is unavailable in this build	nativní AI není v tomto sestavení dostupná
+	model storage is unavailable	úložiště modelů není dostupné
+	AI removal is unavailable in the browser	odstranění pomocí AI není v prohlížeči dostupné
+	Local background reconstruction; 512 px context, CPU processing	Místní rekonstrukce pozadí; kontext 512 px, zpracování na CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Kompaktní místní rekonstrukce; starší postup MI-GAN, kontext 512 px na CPU
+	local AI processing is disabled	místní zpracování AI je vypnuto
+	the selected model is not yet qualified for Automatic Remove	vybraný model zatím nesplňuje podmínky pro automatické odstranění

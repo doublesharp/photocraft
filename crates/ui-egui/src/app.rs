@@ -56,6 +56,7 @@ impl PhotocraftApp {
             remove_pending: Vec::new(),
             remove_pending_target: None,
             remove_trail: None,
+            remove_last_result: None,
             menu_cache: None,
             move_preview: None,
             move_hover: None,

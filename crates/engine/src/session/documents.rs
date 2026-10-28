@@ -1,5 +1,6 @@
 use super::history::fix_selection;
 use super::{DocState, Document, Session, channel_cmds, smart_cmds};
+use std::sync::Arc;
 
 /// Move item `i` of `v` to position `to`, clamped to the end. Returns where it went; `None` when
 /// `i` is out of range.
@@ -16,6 +17,16 @@ pub fn move_item<T>(v: &mut Vec<T>, i: usize, to: usize) -> Option<usize> {
 impl Session {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Inject the app's model directory, verified runtime and optional transport.
+    pub fn set_removal_service(&mut self, service: Arc<photocraft_ml::RemovalService>) {
+        self.removal_service = service;
+    }
+
+    /// Clone the service so a worker can own its lease independently of the session.
+    pub fn removal_service(&self) -> Arc<photocraft_ml::RemovalService> {
+        Arc::clone(&self.removal_service)
     }
 
     pub fn documents(&self) -> &[DocState] {
@@ -39,6 +50,15 @@ impl Session {
     /// mean the document was not switched in between.
     pub fn active_generation(&self) -> u64 {
         self.active_generation
+    }
+
+    /// Generation of removal target or processing changes, including nested command transitions.
+    pub fn remove_context_generation(&self) -> u64 {
+        self.remove_context_generation
+    }
+
+    pub(crate) fn note_remove_context_change(&mut self) {
+        self.remove_context_generation = self.remove_context_generation.wrapping_add(1);
     }
 
     /// Bump [`Self::active_generation`] when the active document id changed. Call after every

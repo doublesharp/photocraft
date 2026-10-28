@@ -192,6 +192,14 @@ fn process_outputs<'a>(
             written.check(&out).map_err(EngineError::Other)?;
             let bytes = read_file(path)?;
             let mut scratch = Session::new();
+            scratch.set_removal_service(s.removal_service());
+            let remove_prefs = s.prefs().generative_remove.clone();
+            let memory_usage_mb = s.prefs().performance.memory_usage_mb;
+            scratch.edit_prefs(|prefs| {
+                prefs.generative_remove = remove_prefs;
+                prefs.performance.memory_usage_mb = memory_usage_mb;
+            });
+            scratch.color.settings.working_rgb = s.color.settings.working_rgb.clone();
             let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
             scratch.add_document(doc, Some(path.to_string()));
             if !f(&mut scratch, &out)? {
@@ -251,6 +259,9 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // Each result goes to the destination folder, which overrides the action's recorded Save /
     // Save As steps: they only mark the result.
     steps.retain(|(id, _)| batch_keeps_step(id) && id != "file.export.quickExport");
+    if let Some((id, _)) = steps.iter().find(|(id, _)| crate::model_cmds::is_management(id)) {
+        return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("model management `{id}` cannot run in a batch or droplet") });
+    }
     if let Some((id, _)) = steps.iter().find(|(id, _)| !batch_save_point(id) && crate::commands::find(id).is_none()) {
         return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
     }
@@ -338,4 +349,30 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         s.actions.playback_steps = carried.get();
     }
     Ok(r)
+}
+
+#[cfg(test)]
+mod removal_preference_tests {
+    use super::*;
+    #[test]
+    fn review_batch_scratch_respects_the_parent_memory_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = Session::new();
+        parent.execute("file.new", json!({"width":8,"height":8,"background":"white"})).unwrap();
+        parent.edit_prefs(|prefs| {
+            prefs.performance.memory_usage_mb = 256;
+            prefs.generative_remove.enabled = true;
+        });
+        let encoded = photocraft_io::export(&parent.active().unwrap().doc, "png", &photocraft_io::ExportOptions::default()).unwrap();
+        let input = dir.path().join("input.png");
+        std::fs::write(&input, encoded.bytes).unwrap();
+        let input = input.to_string_lossy().into_owned();
+        let output = dir.path().join("output.png").to_string_lossy().into_owned();
+        let result = process_outputs(&parent, [(input.as_str(), output)], SaveOpts::default(), &|scratch, _| {
+            assert_eq!(scratch.prefs().performance.memory_usage_mb, 256, "batch replaced the user's limit with the default");
+            assert!(scratch.prefs().generative_remove.enabled);
+            Ok(true)
+        });
+        assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    }
 }

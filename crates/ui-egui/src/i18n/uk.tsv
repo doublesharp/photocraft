@@ -4198,3 +4198,34 @@ curves	Smooth	Згладити
 	Font size presets	Набори розмірів шрифту
 	Leading presets	Набори інтерліньяжу
 	Tracking presets	Набори трекінгу
+
+# Local Remove model manager
+	Generative Remove Models…	Моделі генеративного видалення…
+	Generative Remove Models	Моделі генеративного видалення
+	Method:	Метод:
+	Classical	Класичний
+	Models…	Моделі…
+	Enable local AI removal	Увімкнути локальне видалення з ШІ
+	In use	Використовується
+	Installed	Установлено
+	Not installed	Не встановлено
+	Enable this process	Увімкнути цю обробку
+	Selected model	Вибрана модель
+	Model source and license	Джерело й ліцензія моделі
+	Model download source	Джерело завантаження моделі
+	Download	Завантажити
+	Install from file…	Установити з файлу…
+	Remove model	Видалити модель
+	Cancel model operation	Скасувати операцію з моделлю
+	Model installation cancelled	Установлення моделі скасовано
+	Model removed	Модель видалено
+	Model installed and verified	Модель установлено й перевірено
+	local AI processing is disabled	локальну обробку ШІ вимкнено
+	the selected model is not yet qualified for Automatic Remove	вибрану модель ще не допущено для автоматичного видалення
+	Choose which local models may process your images. A brush stroke never downloads a model.	Виберіть локальні моделі для обробки зображень. Мазок пензлем ніколи не завантажує модель.
+	Local AI inference is unavailable in this build. Classical Remove remains available.	Локальний ШІ недоступний у цій збірці. Класичне видалення залишається доступним.
+	Model installation is unavailable in this session.	Установлення моделей недоступне в цьому сеансі.
+	Settings take effect immediately. Downloads continue while this window is closed.	Налаштування застосовуються одразу. Завантаження триває після закриття вікна.
+	Settings take effect immediately.	Налаштування застосовуються одразу.
+	Local background reconstruction; 512 px context, CPU processing	Локальне відновлення тла; контекст 512 пікс., обробка на CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Компактне локальне відновлення; попередній процес MI-GAN, контекст 512 пікс. на CPU

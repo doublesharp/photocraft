@@ -65,6 +65,8 @@ mod appearance;
 mod dialogs;
 mod fields;
 mod graphics;
+mod models;
+pub use models::open as open_remove_models;
 mod save;
 mod shortcuts;
 mod startup;

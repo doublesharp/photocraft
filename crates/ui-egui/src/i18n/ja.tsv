@@ -4164,3 +4164,44 @@ curves	Smooth	スムーズ
 	Font size presets	フォントサイズのプリセット
 	Leading presets	行送りのプリセット
 	Tracking presets	トラッキングのプリセット
+
+# Local Remove model manager
+	Generative Remove Models…	生成削除モデル…
+	Generative Remove Models	生成削除モデル
+	Method:	方式:
+	Classical	従来方式
+	Models…	モデル…
+	Enable local AI removal	ローカル AI 削除を有効にする
+	In use	使用中
+	Installed	インストール済み
+	Not installed	未インストール
+	Enable this process	この処理を有効にする
+	Selected model	選択したモデル
+	Model source and license	モデルのソースとライセンス
+	Model download source	モデルのダウンロード元
+	Download	ダウンロード
+	Install from file…	ファイルからインストール…
+	Remove model	モデルを削除
+	Cancel model operation	モデル処理をキャンセル
+	Model installation cancelled	モデルのインストールをキャンセルしました
+	Model removed	モデルを削除しました
+	Model installed and verified	モデルをインストールして検証しました
+	Local AI inference is unavailable in this build. Classical Remove remains available.	このビルドではローカル AI 推論を使用できません。従来方式の削除は使用できます。
+	Model installation is unavailable in this session.	このセッションではモデルをインストールできません。
+	Choose which local models may process your images. A brush stroke never downloads a model.	画像の処理に使用できるローカルモデルを選択します。ブラシストロークでモデルがダウンロードされることはありません。
+	Settings take effect immediately. Downloads continue while this window is closed.	設定はすぐに反映されます。このウィンドウを閉じてもダウンロードは続行されます。
+	The model operation continues while this window is closed.	このウィンドウを閉じてもモデルの処理は続行されます。
+	Choose a model file to install.	インストールするモデルファイルを選択してください。
+	Settings take effect immediately.	設定はすぐに反映されます。
+	No model file was selected	モデルファイルが選択されていません
+	Local model installation requires a desktop file path	ローカルモデルのインストールにはデスクトップのファイルパスが必要です
+	Remove is processing. Wait for it to finish or cancel the operation.	削除を処理中です。完了するまで待つか、処理をキャンセルしてください。
+	Remove was cancelled because its source or settings changed.	ソースまたは設定が変更されたため、削除をキャンセルしました。
+	model is not installed	モデルがインストールされていません
+	native AI inference is unavailable in this build	このビルドではネイティブ AI 推論を使用できません
+	model storage is unavailable	モデルの保存先を使用できません
+	AI removal is unavailable in the browser	ブラウザでは AI 削除を使用できません
+	Local background reconstruction; 512 px context, CPU processing	ローカルで背景を再構成。512 px の周辺領域、CPU 処理
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	コンパクトなローカル再構成。従来の MI-GAN パイプライン、512 px の周辺領域、CPU 処理
+	local AI processing is disabled	ローカル AI 処理が無効です
+	the selected model is not yet qualified for Automatic Remove	選択したモデルは自動削除の基準をまだ満たしていません

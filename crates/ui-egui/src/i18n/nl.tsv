@@ -4245,3 +4245,34 @@ curves	Smooth	Vloeiend maken
 	Font size presets	Voorinstellingen lettergrootte
 	Leading presets	Voorinstellingen interlinie
 	Tracking presets	Voorinstellingen spatiëring
+
+# Local Remove model manager
+	Generative Remove Models…	Modellen voor generatief verwijderen…
+	Generative Remove Models	Modellen voor generatief verwijderen
+	Method:	Methode:
+	Classical	Klassiek
+	Models…	Modellen…
+	Enable local AI removal	Lokaal verwijderen met AI inschakelen
+	In use	In gebruik
+	Installed	Geïnstalleerd
+	Not installed	Niet geïnstalleerd
+	Enable this process	Dit proces inschakelen
+	Selected model	Geselecteerd model
+	Model source and license	Modelbron en licentie
+	Model download source	Downloadbron van model
+	Download	Downloaden
+	Install from file…	Installeren vanuit bestand…
+	Remove model	Model verwijderen
+	Cancel model operation	Modelbewerking annuleren
+	Model installation cancelled	Modelinstallatie geannuleerd
+	Model removed	Model verwijderd
+	Model installed and verified	Model geïnstalleerd en gecontroleerd
+	local AI processing is disabled	lokale AI-verwerking is uitgeschakeld
+	the selected model is not yet qualified for Automatic Remove	het geselecteerde model is nog niet goedgekeurd voor automatisch verwijderen
+	Choose which local models may process your images. A brush stroke never downloads a model.	Kies welke lokale modellen je afbeeldingen mogen verwerken. Een penseelstreek downloadt nooit een model.
+	Local AI inference is unavailable in this build. Classical Remove remains available.	Lokale AI-inferentie is niet beschikbaar in deze build. Klassiek verwijderen blijft beschikbaar.
+	Model installation is unavailable in this session.	Modellen installeren is niet beschikbaar in deze sessie.
+	Settings take effect immediately. Downloads continue while this window is closed.	Instellingen worden direct toegepast. Downloads gaan door nadat je dit venster sluit.
+	Settings take effect immediately.	Instellingen worden direct toegepast.
+	Local background reconstruction; 512 px context, CPU processing	Lokale achtergrondreconstructie; context van 512 px, verwerking door CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Compacte lokale reconstructie; oudere MI-GAN-pijplijn, context van 512 px op CPU

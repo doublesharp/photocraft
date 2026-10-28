@@ -63,6 +63,11 @@ impl Trail {
         self.k
     }
 
+    /// Whether the next feed would generate dabs, rather than reuse the existing tint.
+    pub fn needs_points(&self, len: usize) -> bool {
+        self.dabs.is_none() || self.fed < len
+    }
+
     /// Stamp the drag points not seen yet: round footprints of `diameter` document pixels joined
     /// into a capsule per segment (coverage is the max, so overlaps don't add up).
     pub fn feed(&mut self, points: &[[f64; 3]], diameter: f32) {

@@ -10,6 +10,9 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &V
     if !empty {
         return None;
     }
+    if id == "edit.preferences.generativeRemove" {
+        return Some(Ok(json!({"dialog": super::models::open(app)})));
+    }
     if let Some(section) = id.strip_prefix("edit.preferences.") {
         return Some(Ok(json!({"dialog": open_preferences(app, section)})));
     }
@@ -126,6 +129,7 @@ pub(super) fn settings_height(available: f32, item_spacing: f32, button_height: 
 pub fn width(fields: &Map<String, Value>, available: f32) -> Option<f32> {
     match fields.get("__prefsui").and_then(Value::as_str)? {
         "prefs" => Some(available.max(380.0)),
+        "removeModels" => Some(620.0_f32.min(available.max(380.0))),
         "shortcuts" => Some(720.0),
         _ => Some(460.0),
     }
@@ -319,6 +323,7 @@ pub(super) fn mismatch_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
 /// OK on one of our dialogs.
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
     match f.get("__prefsui").and_then(Value::as_str).unwrap_or("") {
+        "removeModels" => Ok(json!({"closed": true})),
         "prefs" => {
             let values = f.get("values").cloned().unwrap_or(Value::Null);
             app.run("prefs.set", json!({"path": "", "value": values}))

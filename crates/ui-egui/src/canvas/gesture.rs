@@ -7,6 +7,21 @@ use super::textures::shown_as_document;
 use super::{PhotocraftApp, Tool, json};
 
 pub(crate) fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
+    // A document, target, selection, settings or model preference can change while the
+    // pointer is down (including through the control channel). Never retarget that stroke.
+    if d.tool == Tool::Remove
+        && (app.active_tool() != Tool::Remove
+            || d.remove_target.is_none()
+            || d.remove_target.as_ref() != crate::retouch_ui::remove_target(app).as_ref()
+            || app.session.active_job().is_some())
+    {
+        app.live_stroke = None;
+        app.session.clear_live_stroke();
+        crate::retouch_ui::remove_pending_live(app);
+        app.ui.status = tl!("Remove was cancelled because its source or settings changed.").into();
+        app.ui.status_error = true;
+        return;
+    }
     // Control can select a different tool and release before the next frame cancels the drag.
     // Cancel before even recording a Shift-stroke anchor, including the preview fallback paths.
     if d.tool == Tool::MixerBrush && app.ui.tool != Tool::MixerBrush {
@@ -71,7 +86,8 @@ pub(crate) fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
     if live_retouch_command(d.tool).is_some() || crate::retouch_ui::dab_params(app, d.tool).is_some() || d.tool == Tool::ColorReplacement {
         app.live_stroke = None;
     }
-    let finished = crate::eraser_ui::finish_stroke(app, d.tool, &d.points) || crate::retouch_ui::finish_stroke(app, d.tool, &d.points, d.modifiers);
+    let finished = crate::eraser_ui::finish_stroke(app, d.tool, &d.points)
+        || crate::retouch_ui::finish_stroke_with_brush(app, d.tool, &d.points, d.modifiers, d.remove_brush.as_ref());
     app.session.clear_live_stroke();
     if finished {
         return;

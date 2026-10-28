@@ -176,6 +176,11 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest
     }
     let outcome = dispatch(app, ctx, req);
     app.session.authorize = saved;
+    // Each control operation owns its transition. A later call which restores the old
+    // method/tool must not revive strokes invalidated by this call.
+    if !app.remove_pending.is_empty() {
+        crate::retouch_ui::remove_pending_live(app);
+    }
     outcome
 }
 

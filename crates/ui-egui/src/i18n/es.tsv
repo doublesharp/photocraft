@@ -4447,3 +4447,44 @@ navigator	Zoom	Zoom
 	Font size presets	Valores predefinidos de tamaño de fuente
 	Leading presets	Valores predefinidos de interlineado
 	Tracking presets	Valores predefinidos de tracking
+
+# Local Remove model manager
+	Generative Remove Models…	Modelos de eliminación generativa…
+	Generative Remove Models	Modelos de eliminación generativa
+	Method:	Método:
+	Classical	Clásico
+	Models…	Modelos…
+	Enable local AI removal	Activar eliminación con IA local
+	In use	En uso
+	Installed	Instalado
+	Not installed	No instalado
+	Enable this process	Activar este proceso
+	Selected model	Modelo seleccionado
+	Model source and license	Origen y licencia del modelo
+	Model download source	Origen de descarga del modelo
+	Download	Descargar
+	Install from file…	Instalar desde archivo…
+	Remove model	Eliminar modelo
+	Cancel model operation	Cancelar operación del modelo
+	Model installation cancelled	Instalación del modelo cancelada
+	Model removed	Modelo eliminado
+	Model installed and verified	Modelo instalado y verificado
+	Local AI inference is unavailable in this build. Classical Remove remains available.	La inferencia de IA local no está disponible en esta versión. La eliminación clásica sigue disponible.
+	Model installation is unavailable in this session.	La instalación de modelos no está disponible en esta sesión.
+	Choose which local models may process your images. A brush stroke never downloads a model.	Elige qué modelos locales pueden procesar tus imágenes. Una pincelada nunca descarga un modelo.
+	Settings take effect immediately. Downloads continue while this window is closed.	Los ajustes se aplican de inmediato. Las descargas continúan al cerrar esta ventana.
+	The model operation continues while this window is closed.	La operación del modelo continúa al cerrar esta ventana.
+	Choose a model file to install.	Elige un archivo de modelo para instalar.
+	Settings take effect immediately.	Los ajustes se aplican de inmediato.
+	No model file was selected	No se seleccionó ningún archivo de modelo
+	Local model installation requires a desktop file path	La instalación de modelos locales requiere una ruta de archivo de escritorio
+	Remove is processing. Wait for it to finish or cancel the operation.	La eliminación está en curso. Espera a que termine o cancela la operación.
+	Remove was cancelled because its source or settings changed.	Se canceló la eliminación porque cambió el origen o los ajustes.
+	model is not installed	el modelo no está instalado
+	native AI inference is unavailable in this build	la inferencia de IA nativa no está disponible en esta versión
+	model storage is unavailable	el almacenamiento de modelos no está disponible
+	AI removal is unavailable in the browser	la eliminación con IA no está disponible en el navegador
+	Local background reconstruction; 512 px context, CPU processing	Reconstrucción local del fondo; contexto de 512 px, procesamiento por CPU
+	Compact local reconstruction; exact older MI-GAN pipeline, 512 px CPU context	Reconstrucción local compacta; flujo MI-GAN anterior, contexto de 512 px en CPU
+	local AI processing is disabled	el procesamiento de IA local está desactivado
+	the selected model is not yet qualified for Automatic Remove	el modelo seleccionado aún no está cualificado para la eliminación automática

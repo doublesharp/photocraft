@@ -56,9 +56,9 @@ note = "runtime.rs:15 ABI_VERSION = 1; manifest.rs:18 Kind::Filter only"
 [[item]]
 id = "AUTO-219-7"
 target = "Local ONNX models behind a flag, managed in Preferences; subject select, background removal"
-status = "missing"
+status = "partial"
 issue = 219
-note = "No ONNX runtime dependency"
+note = "Optional native Rust tract-onnx 0.23.9 runtime and Preferences model manager for LaMa/MI-GAN v1 Remove, with explicit verified downloads/import/removal and enabled-process settings (2026-10-27). Subject segmentation/background cutout, other learned tasks, GPU/browser inference and broader native qualification remain missing. The two installed removal models have bounded macOS numerical and engine apply/undo evidence; this is not Photoshop quality parity."
 
 [[item]]
 id = "AUTO-219-8"
