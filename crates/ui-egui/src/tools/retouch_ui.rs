@@ -930,4 +930,4 @@ fn pattern_stamp_options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

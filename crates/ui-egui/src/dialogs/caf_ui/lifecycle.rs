@@ -17,13 +17,29 @@ pub fn open(app: &mut PhotocraftApp) -> Result<(), String> {
     if let Some(saved) = app.session.prefs().dialogs.get(REMEMBERED) {
         let _ = opts.apply(saved);
     }
+    if !app.session.prefs().dialogs.get(REMEMBERED).is_some_and(|saved| saved.get("method").is_some())
+        && opts.sampling != "custom"
+        && super::ai::readiness(app).is_ok()
+    {
+        opts.method = "ai".into();
+    }
+    let mut initial_error = None;
+    if opts.method == "ai" {
+        let params = serde_json::json!({"method":"ai", "modelId":"lama", "sampling":"rectangular", "sampleAllLayers":opts.sample_all,
+            "output":opts.output,"layer":layer.0,"fillEdits":[]});
+        if let Err(error) = photocraft_engine::edit_menu_cmds::validate_ai_smart_fill(&app.session, &params) {
+            opts.method = "classical".into();
+            initial_error = Some(format!("LaMa is unavailable for this fill: {error}. Using Classical."));
+        }
+    }
+    let initial_tool = if opts.method == "ai" { CafTool::Lasso } else { CafTool::Brush };
     let mut w = CafWorkspace {
         layer,
         layer_name: name,
         canvas,
         revision,
         opts,
-        tool: CafTool::Brush,
+        tool: initial_tool,
         brush_add: false,
         brush_size: 20.0,
         lasso_op: 0,
@@ -51,7 +67,8 @@ pub fn open(app: &mut PhotocraftApp) -> Result<(), String> {
         center: [f64::from(canvas.x0 + canvas.x1) / 2.0, f64::from(canvas.y0 + canvas.y1) / 2.0],
         hover: None,
         preview: Preview::default(),
-        error: None,
+        ai: super::ai::State::default(),
+        error: initial_error,
     };
     w.brush_add = w.opts.sampling == "custom";
     let base = compute_base(app, &w)?;
@@ -83,7 +100,12 @@ pub fn apply(app: &mut PhotocraftApp) -> Result<Value, String> {
     let p = plan_params(w, true);
     let opts = w.opts.clone();
     remember(app, &opts);
-    let r = app.run(CMD, p);
+    let r = if opts.method == "ai" {
+        super::ai::apply(app)
+    } else {
+        super::ai::clear(app);
+        app.run(CMD, p)
+    };
     if r.is_ok() {
         refresh(app);
     }
@@ -94,6 +116,13 @@ pub fn apply(app: &mut PhotocraftApp) -> Result<Value, String> {
 /// leaves the workspace open with the error in its panel, so the areas can be fixed and OK
 /// pressed again instead of the work being thrown away.
 pub fn commit(app: &mut PhotocraftApp) {
+    if super::ai::already_applied(app) {
+        if let Some(opts) = app.distort.caf.as_ref().map(|w| w.opts.clone()) {
+            remember(app, &opts);
+        }
+        close(app);
+        return;
+    }
     match apply(app) {
         Ok(_) => close(app),
         Err(e) => report(app, e),
@@ -119,6 +148,7 @@ pub fn cancel(app: &mut PhotocraftApp) {
 }
 
 pub(super) fn close(app: &mut PhotocraftApp) {
+    super::ai::clear(app);
     if let Some(w) = app.distort.caf.take() {
         cancel_preview(w);
     }

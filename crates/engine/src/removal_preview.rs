@@ -35,7 +35,7 @@ impl Capture {
         })
     }
 
-    fn current(&self, s: &Session) -> bool {
+    pub(crate) fn current(&self, s: &Session) -> bool {
         s.active().is_some_and(|st| {
             Arc::ptr_eq(&st.doc, &self.source)
                 && st.revision == self.revision

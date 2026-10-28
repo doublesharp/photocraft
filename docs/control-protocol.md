@@ -774,3 +774,13 @@ dock target. The panel menu and icon rail remain
 available in custom workspaces. `window.panel.<id> {show:true}` always reveals, selects
 and expands the panel, including when another tab is selected. Workspace snapshots
 retain custom collapse settings and Timeline visibility.
+
+### Local AI Content-Aware Fill
+
+The workspace accepts `edit.contentAwareFill {"ui":{"method":"ai","waitPreview":true}}`.
+Use `method:"classical"` for sampling-brush and adaptation controls. AI selection
+edits, output choices and Sample All Layers use the existing workspace fields.
+Headless callers use `edit.contentAwareFill {"method":"ai","preview":true,...}`,
+then `fill.preview.status`, `fill.preview.apply {"id":...}` or
+`fill.preview.discard {"id":...}`. Apply commits the exact retained candidate once.
+See [Smart Fill](smart-fill.md) for setup, supported contexts and ownership.

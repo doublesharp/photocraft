@@ -9,6 +9,7 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
         cancel(app);
         return Ok(json!({"cancelled": true}));
     }
+    super::ai::validate_controls(app, ui)?;
     let before = app.distort.caf.as_ref().ok_or("Content-Aware Fill is not open")?.opts.clone();
     {
         let w = app.distort.caf.as_mut().ok_or("Content-Aware Fill is not open")?;
@@ -37,13 +38,22 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
         }
     }
     let after = app.distort.caf.as_ref().map(|w| w.opts.clone());
-    if after.as_ref().is_some_and(|a| a.sample_all != before.sample_all) {
+    if after.as_ref().is_some_and(|a| a.sample_all != before.sample_all || a.method != before.method) {
+        if let Some(w) = app.distort.caf.as_mut()
+            && w.opts.method == "ai"
+            && w.tool == CafTool::Brush
+        {
+            w.tool = CafTool::Lasso;
+        }
         rebase(app);
     } else if after.as_ref().is_some_and(|a| *a != before)
         && let Some(w) = app.distort.caf.as_mut()
     {
         w.stale();
         w.restate_all();
+    }
+    if ui.get("models").and_then(Value::as_bool) == Some(true) {
+        super::ai::open_models(app);
     }
     if let Some(s) = ui.get("stroke") {
         let pts: Vec<[f64; 2]> = serde_json::from_value(s.get("points").cloned().unwrap_or(Value::Null)).map_err(|e| format!("bad stroke points: {e}"))?;
@@ -92,6 +102,10 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
     // OK last, with the settings given alongside. A failed fill keeps the workspace open, as
     // the OK button does.
     if flag("commit") {
+        if super::ai::already_applied(app) {
+            super::lifecycle::commit(app);
+            return Ok(json!({"committed":true,"alreadyApplied":true}));
+        }
         let r = apply(app);
         match &r {
             Ok(_) => close(app),

@@ -22,7 +22,7 @@ Normal **Download and use…** and **Use this setup…** model actions open the 
 
 ## Use the tool
 
-These settings configure Remove. Content-Aware Fill continues to use its existing classical algorithm; prompted Generative Fill is separate work.
+Content-Aware Fill can also use LaMa through the same installed model, processing opt-in, memory allowance and idle cache. Its Classical method retains custom sampling controls. See [Smart Fill with LaMa](smart-fill.md). Prompted Generative Fill remains separate work.
 
 Use **Auto** with the selected setup. Recommended groups touching stroke footprints, then routes each independent region using its original source pixels. The automatic rule sends narrow regions (footprint aspect ratio at least 3:1 and minor extent at most 64 pixels) to LaMa and other regions to OSOR. **Repair type** can explicitly select small marks or objects for a stroke. This is a geometry rule informed by the prior manual workflow; broad image-quality qualification remains open.
 

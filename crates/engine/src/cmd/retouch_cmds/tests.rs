@@ -2469,7 +2469,7 @@ fn remove_auto_reports_its_classical_fallback_without_downloading_a_model() {
 
 // The runtime admits one model operation per process; keep independent engine tests from
 // racing the deliberately noninterruptible test worker.
-fn lock_ai_tests() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn lock_ai_tests() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }

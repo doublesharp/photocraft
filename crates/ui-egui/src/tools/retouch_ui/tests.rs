@@ -1,7 +1,7 @@
 use super::*;
 use crate::canvas::{ToolEvent, tool_event};
 
-static REMOVE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static REMOVE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());

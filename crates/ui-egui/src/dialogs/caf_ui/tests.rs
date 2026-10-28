@@ -472,3 +472,311 @@ fn strokes_past_the_engines_limits_are_refused_at_the_brush() {
     assert_eq!(d["fillEdits"], json!(0));
     assert!(d["error"].as_str().is_some_and(|e| e.contains("at most")), "{d}");
 }
+
+#[test]
+fn lama_fill_method_roundtrips_and_rejects_unknown_modes() {
+    let mut opts = CafOpts::default();
+    opts.apply(&json!({"method":"ai"})).unwrap();
+    assert_eq!(opts.to_json()["method"], "ai", "Smart Fill must remember the selected LaMa method");
+    assert!(opts.apply(&json!({"method":"unknown"})).is_err());
+    assert!(opts.apply(&json!({"method":7})).is_err());
+    opts.apply(&json!({"method":"classical"})).unwrap();
+    assert_eq!(opts.to_json()["method"], "classical");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn lama_app() -> (PhotocraftApp, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Black(Arc<AtomicUsize>);
+    impl photocraft_ml::RemovalBackend for Black {
+        fn ready(&self, id: &str) -> bool {
+            id == "lama"
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            Ok(photocraft_ml::RemovalOutput { rgb: vec![0.; input.rgb.len()], edit_alpha: None, inference_scale: 1., load_ms: 0., forward_ms: 0. })
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut app = app_with_selection();
+    app.session.set_removal_service(Arc::new(photocraft_ml::RemovalService::new(None).with_backend(Arc::new(Black(Arc::clone(&calls))))));
+    app.session.edit_prefs(|prefs| {
+        prefs.generative_remove.enabled = true;
+        prefs.generative_remove.enabled_models = vec!["lama".into()];
+        prefs.performance.memory_usage_mb = 8192;
+        prefs.dialogs.remove(REMEMBERED);
+    });
+    (app, calls)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_preview_apply_uses_the_shown_pixels_and_one_forward_for_every_output() {
+    use std::sync::atomic::Ordering;
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for output in ["current", "new", "duplicate"] {
+        let (mut app, calls) = lama_app();
+        let source = app.session.active().unwrap().active_layer.unwrap();
+        let before = px(&app, source, 100, 80);
+        let history = app.session.active().unwrap().history.past_len();
+        open(&mut app).unwrap();
+        assert_eq!(ws(&app).opts.method, "ai");
+        let preview = control(&mut app, &json!({"output":output,"waitPreview":true})).unwrap();
+        assert_eq!(preview["previewReady"], true);
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert_eq!(px(&app, source, 100, 80), before);
+        assert_eq!(app.session.active().unwrap().history.past_len(), history);
+        control(&mut app, &json!({"apply":true})).unwrap();
+        assert_eq!(calls.load(Ordering::Acquire), 1, "Apply must not repeat inference");
+        assert_eq!(app.session.active().unwrap().history.past_len(), history + 1);
+        let result_layer = app.session.active().unwrap().active_layer.unwrap();
+        assert!(px(&app, result_layer, 100, 80)[0] < 0.01);
+        if output != "current" {
+            assert_eq!(px(&app, source, 100, 80), before);
+        }
+        super::ai::drive(&mut app, &egui::Context::default(), false);
+        assert_eq!(calls.load(Ordering::Acquire), 1, "an unchanged Apply must not automatically start another forward");
+        cancel(&mut app);
+        app.session.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(px(&app, source, 100, 80), before);
+    }
+}
+
+#[test]
+fn lama_fill_parameters_keep_classical_settings_without_claiming_to_use_them() {
+    let mut app = app_with_selection();
+    open(&mut app).unwrap();
+    control(&mut app, &json!({"sampling":"custom","colorAdaptation":"high","mirror":true})).unwrap();
+    control(&mut app, &json!({"method":"ai"})).unwrap();
+    let plan = plan_params(ws(&app), true);
+    assert_eq!(plan["method"], "ai");
+    assert_eq!(plan["sampling"], "rectangular");
+    for key in ["samplingStrokes", "colorAdaptation", "rotationAdaptation", "scale", "mirror", "seed"] {
+        assert!(plan.get(key).is_none());
+    }
+    for input in [json!({"sampling":"custom"}), json!({"stroke":{"points":[[10,10]]}}), json!({"rotationAdaptation":"high"}), json!({"tool":"brush"})] {
+        assert!(control(&mut app, &input).unwrap_err().contains("Classical"));
+    }
+    control(&mut app, &json!({"method":"classical"})).unwrap();
+    assert_eq!(ws(&app).opts.sampling, "custom");
+    assert_eq!(ws(&app).opts.color_adaptation, "high");
+    assert!(ws(&app).opts.mirror);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_overlay_and_unrelated_preferences_reuse_the_current_candidate() {
+    use std::sync::atomic::Ordering;
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, calls) = lama_app();
+    open(&mut app).unwrap();
+    control(&mut app, &json!({"waitPreview":true})).unwrap();
+    let id = ws(&app).ai.id;
+    app.session.edit_prefs(|prefs| prefs.performance.memory_usage_mb = 9216);
+    control(&mut app, &json!({"opacity":25,"showOverlay":false,"waitPreview":true})).unwrap();
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(ws(&app).ai.id, id);
+    cancel(&mut app);
+    assert_eq!(app.session.fill_preview_status()["ready"], false);
+    assert!(app.session.removal_service().admit("lama", 64, u64::MAX).is_ok());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_switching_methods_and_model_manager_release_the_candidate() {
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, _) = lama_app();
+    open(&mut app).unwrap();
+    control(&mut app, &json!({"waitPreview":true})).unwrap();
+    control(&mut app, &json!({"method":"classical","waitPreview":true})).unwrap();
+    assert_eq!(app.session.fill_preview_status()["ready"], false);
+    control(&mut app, &json!({"method":"ai","waitPreview":true})).unwrap();
+    let area = ws(&app).fill_edits.clone();
+    control(&mut app, &json!({"models":true})).unwrap();
+    assert!(super::ai::manager_open(&app));
+    assert_eq!(app.session.fill_preview_status()["ready"], false);
+    assert_eq!(ws(&app).fill_edits, area, "opening Models preserves the workspace");
+    cancel(&mut app);
+}
+
+#[test]
+fn lama_fill_missing_model_is_an_error_without_a_classical_fallback() {
+    let mut app = app_with_selection();
+    let history = app.session.active().unwrap().history.past_len();
+    open(&mut app).unwrap();
+    let error = control(&mut app, &json!({"method":"ai","waitPreview":true})).unwrap_err();
+    assert!(error.contains("Models"), "{error}");
+    assert_eq!(ws(&app).opts.method, "ai");
+    assert_eq!(app.session.active().unwrap().history.past_len(), history);
+    assert!(control(&mut app, &json!({"apply":true})).is_err());
+    cancel(&mut app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_changed_area_discards_the_old_preview_before_recomputing() {
+    use std::sync::atomic::Ordering;
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, calls) = lama_app();
+    open(&mut app).unwrap();
+    control(&mut app, &json!({"waitPreview":true})).unwrap();
+    let old = ws(&app).ai.id;
+    control(&mut app, &json!({"expand":2,"waitPreview":true})).unwrap();
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    assert_ne!(ws(&app).ai.id, old);
+    assert_eq!(app.session.fill_preview_status()["ready"], true);
+    cancel(&mut app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_method_switch_cancels_work_and_retains_admission_until_drain() {
+    use std::sync::{Arc, Mutex, mpsc};
+    struct Blocking {
+        entered: mpsc::Sender<()>,
+        leave: Mutex<mpsc::Receiver<()>>,
+    }
+    impl photocraft_ml::RemovalBackend for Blocking {
+        fn ready(&self, id: &str) -> bool {
+            id == "lama"
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            self.entered.send(()).unwrap();
+            self.leave.lock().unwrap().recv().unwrap();
+            Ok(photocraft_ml::RemovalOutput { rgb: input.rgb.clone(), edit_alpha: None, inference_scale: 1., load_ms: 0., forward_ms: 0. })
+        }
+    }
+    struct Release(mpsc::Sender<()>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (leave_tx, leave_rx) = mpsc::channel();
+    let mut app = app_with_selection();
+    app.background_jobs = true;
+    app.session.set_removal_service(Arc::new(
+        photocraft_ml::RemovalService::new(None).with_backend(Arc::new(Blocking { entered: entered_tx, leave: Mutex::new(leave_rx) })),
+    ));
+    app.session.edit_prefs(|prefs| {
+        prefs.generative_remove.enabled = true;
+        prefs.generative_remove.enabled_models = vec!["lama".into()];
+        prefs.performance.memory_usage_mb = 8192;
+        prefs.dialogs.remove(REMEMBERED);
+    });
+    let revision = app.session.active().unwrap().revision;
+    open(&mut app).unwrap();
+    let release = Release(leave_tx);
+    super::ai::drive(&mut app, &egui::Context::default(), false);
+    entered_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    control(&mut app, &json!({"method":"classical","waitPreview":true})).unwrap();
+    assert!(matches!(app.session.removal_service().admit("lama", 64, u64::MAX), Err(photocraft_ml::Error::Busy)));
+    release.0.send(()).unwrap();
+    app.session.join_cancelled_jobs();
+    assert_eq!(app.session.fill_preview_status()["ready"], false);
+    assert_eq!(app.session.active().unwrap().revision, revision);
+    assert!(app.session.removal_service().admit("lama", 64, u64::MAX).is_ok());
+    cancel(&mut app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_small_budget_refuses_ai_base_and_keeps_the_workspace_usable() {
+    use std::sync::atomic::Ordering;
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, calls) = lama_app();
+    app.session.edit_prefs(|prefs| prefs.performance.memory_usage_mb = 1);
+    open(&mut app).unwrap();
+    assert_eq!(ws(&app).opts.method, "classical", "insufficient memory must not automatically select LaMa");
+    app.distort.caf.as_mut().unwrap().opts.method = "ai".into();
+    let error = super::preview::compute_base(&app, ws(&app)).err().expect("AI base construction must check its memory budget");
+    assert!(error.contains("budget") || error.contains("memory"), "{error}");
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+    cancel(&mut app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_unsupported_context_defaults_classical_and_saved_ai_can_still_open() {
+    use std::sync::atomic::Ordering;
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for saved_ai in [false, true] {
+        let (mut app, calls) = lama_app();
+        app.session.execute("image.mode.grayscale", json!({})).unwrap();
+        if saved_ai {
+            app.session.edit_prefs(|prefs| {
+                prefs.dialogs.insert(REMEMBERED.into(), json!({"method":"ai"}));
+            });
+        }
+        open(&mut app).unwrap();
+        assert_eq!(ws(&app).opts.method, "classical");
+        if saved_ai {
+            assert!(ws(&app).error.as_deref().is_some_and(|message| message.contains("Classical")));
+        }
+        assert_eq!(calls.load(Ordering::Acquire), 0);
+        cancel(&mut app);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_clear_preserves_a_replacement_candidate_from_another_request() {
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, _) = lama_app();
+    app.background_jobs = true;
+    open(&mut app).unwrap();
+    super::ai::drive(&mut app, &egui::Context::default(), false);
+    let job = ws(&app).ai.job.expect("the workspace owns the background request").1;
+    let old = app.session.wait_job(job).unwrap()["previewId"].as_u64().unwrap();
+    app.session.execute("fill.preview.discard", json!({"id":old})).unwrap();
+    let mut params = plan_params(ws(&app), true);
+    params["preview"] = json!(true);
+    let replacement = app.session.execute(CMD, params).unwrap()["previewId"].as_u64().unwrap();
+    assert_ne!(old, replacement);
+    // The workspace has not collected its old job; cleanup must not discard a newer
+    // candidate another explicit request created in the meantime.
+    super::ai::clear(&mut app);
+    assert_eq!(app.session.fill_preview_status()["ready"], true);
+    assert_eq!(app.session.fill_preview_status()["id"], replacement);
+    app.session.execute("fill.preview.discard", json!({"id":replacement})).unwrap();
+    cancel(&mut app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_ok_after_apply_closes_without_another_forward_or_history_step() {
+    use std::sync::atomic::Ordering;
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for through_control in [false, true] {
+        let (mut app, calls) = lama_app();
+        open(&mut app).unwrap();
+        control(&mut app, &json!({"waitPreview":true})).unwrap();
+        control(&mut app, &json!({"apply":true})).unwrap();
+        let history = app.session.active().unwrap().history.past_len();
+        assert!(control(&mut app, &json!({"waitPreview":true})).is_ok(), "an applied fill must not be reported as busy");
+        if through_control {
+            let result = control(&mut app, &json!({"commit":true})).unwrap();
+            assert_eq!(result["committed"], true);
+        } else {
+            commit(&mut app);
+        }
+        assert!(app.distort.caf.is_none(), "OK must close an unchanged applied workspace");
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert_eq!(app.session.active().unwrap().history.past_len(), history);
+    }
+}

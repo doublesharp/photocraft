@@ -802,3 +802,303 @@ fn tool_preset_import_is_validated_before_mutation_and_accepts_old_files() {
     let result = s.execute("edit.presets.exportImportPresets", json!({"action":"import", "data":{"format":PRESET_FORMAT, "version":1}})).unwrap();
     assert_eq!(result["tools"], 0);
 }
+
+#[derive(Default)]
+struct SmartFillBackend(std::sync::atomic::AtomicUsize, std::sync::Mutex<Vec<photocraft_ml::RemovalInput>>);
+impl photocraft_ml::RemovalBackend for SmartFillBackend {
+    fn ready(&self, id: &str) -> bool {
+        id == "lama"
+    }
+    fn infer(
+        &self,
+        _: &str,
+        input: &photocraft_ml::RemovalInput,
+        _: &dyn photocraft_ml::RemovalControl,
+    ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.1.lock().unwrap().push(input.clone());
+        Ok(photocraft_ml::RemovalOutput { edit_alpha: None, rgb: vec![0.4; input.rgb.len()], inference_scale: 1., load_ms: 0., forward_ms: 0. })
+    }
+}
+fn smart_fill_session(depth: u32) -> (Session, std::sync::Arc<SmartFillBackend>) {
+    let mut s = blob_session(depth);
+    let backend = std::sync::Arc::new(SmartFillBackend::default());
+    s.set_removal_service(std::sync::Arc::new(photocraft_ml::RemovalService::default().with_backend(backend.clone())));
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":true})).unwrap();
+    (s, backend)
+}
+#[test]
+fn smart_fill_ai_applies_once_at_native_depths_and_preserves_outside_selection() {
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    for depth in [8, 16] {
+        for output in ["current", "new", "duplicate"] {
+            let (mut s, backend) = smart_fill_session(depth);
+            let before = s.active().unwrap().doc.clone();
+            let past = s.active().unwrap().history.past_len();
+            let r = s.execute("edit.contentAwareFill", json!({"method":"ai","output":output})).unwrap();
+            assert_eq!(r["effectiveMethod"], "ai", "LaMa must run instead of classical fill");
+            assert_eq!(r["modelId"], "lama");
+            assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!((px(&s, 30, 20)[0] - 0.4).abs() < 0.01);
+            if output == "new" {
+                assert_eq!(px(&s, 1, 1)[3], 0.);
+            } else {
+                assert_eq!(px(&s, 1, 1)[0], 0.);
+            }
+            assert_eq!(s.active().unwrap().history.past_len(), past + 1);
+            assert!(s.undo());
+            assert_eq!(s.active().unwrap().doc, before);
+        }
+    }
+}
+#[test]
+fn smart_fill_preview_owns_admission_and_apply_reuses_the_exact_result() {
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    let (mut s, backend) = smart_fill_session(8);
+    let before = s.active().unwrap().doc.clone();
+    let past = s.active().unwrap().history.past_len();
+    let journal = s.journal.len();
+    let r = s.execute("edit.contentAwareFill", json!({"method":"ai","preview":true,"output":"current"})).unwrap();
+    assert_eq!(r["preview"], true, "a preview must leave the source unchanged");
+    assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+    assert_eq!(s.active().unwrap().history.past_len(), past);
+    assert_eq!(s.journal.len(), journal, "unaccepted preview must not enter recorded actions");
+    assert_eq!(s.execute("fill.preview.status", json!({})).unwrap()["ready"], true);
+    assert!(matches!(s.removal_service().remove("lama"), Err(photocraft_ml::Error::Busy)));
+    s.tools.brush.size = 4.;
+    s.edit_prefs(|prefs| {
+        prefs.dialogs.insert("smart-fill-unrelated-test".into(), json!(true));
+    });
+    assert_eq!(s.execute("fill.preview.status", json!({})).unwrap()["ready"], true, "unrelated persisted preferences keep the candidate");
+    let applied = s.execute("fill.preview.apply", json!({"id":r["previewId"]})).unwrap();
+    assert_eq!(applied["applied"], true);
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(s.active().unwrap().history.past_len(), past + 1);
+    assert_eq!(s.journal.last().unwrap().0, "edit.contentAwareFill");
+    assert_ne!(s.journal.last().unwrap().1.get("preview"), Some(&json!(true)));
+    assert_eq!(s.execute("fill.preview.status", json!({})).unwrap()["ready"], false);
+    assert!(s.undo());
+    assert_eq!(s.active().unwrap().doc, before);
+    assert!(s.removal_service().admit("lama", 0, u64::MAX).is_ok());
+}
+#[test]
+fn smart_fill_ai_rejects_controls_it_cannot_honor_before_inference() {
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    let (mut s, backend) = smart_fill_session(8);
+    let before = s.active().unwrap().doc.clone();
+    for extra in [
+        json!({"method":"unknown"}),
+        json!({"method":false}),
+        json!({"method":"ai","modelId":"osor-sdxl"}),
+        json!({"method":"ai","sampling":"custom","area":[0,0,10,10]}),
+        json!({"method":"ai","samplingStrokes":[{"mode":"add","size":3,"points":[[1,1]]}]}),
+        json!({"method":"ai","colorAdaptation":"high"}),
+        json!({"method":"ai","rotationAdaptation":"low"}),
+        json!({"method":"ai","scale":true}),
+        json!({"method":"ai","mirror":true}),
+        json!({"method":"ai","target":"mask"}),
+        json!({"method":"ai","preview":"yes"}),
+    ] {
+        assert!(s.execute("edit.contentAwareFill", extra.clone()).is_err(), "must reject {extra}");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+    }
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+#[test]
+fn smart_fill_ai_obeys_opt_in_memory_budget_and_stale_preview_guards() {
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    let (mut s, backend) = smart_fill_session(8);
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":false})).unwrap();
+    assert!(s.execute("edit.contentAwareFill", json!({"method":"ai"})).is_err());
+    s.execute("prefs.set", json!({"path":"generativeRemove.enabled","value":true})).unwrap();
+    s.execute("prefs.set", json!({"path":"performance.memoryUsageMb","value":256})).unwrap();
+    assert!(s.execute("edit.contentAwareFill", json!({"method":"ai"})).is_err());
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    s.execute("prefs.set", json!({"path":"performance.memoryUsageMb","value":8192})).unwrap();
+    let r = s.execute("edit.contentAwareFill", json!({"method":"ai","preview":true})).unwrap();
+    assert_eq!(r["preview"], true);
+    s.execute("image.adjustments.invert", json!({})).unwrap();
+    assert!(s.execute("fill.preview.apply", json!({"id":r["previewId"]})).is_err());
+    assert!(s.removal_service().admit("lama", 0, u64::MAX).is_ok(), "stale preview must release model admission");
+}
+
+#[test]
+fn smart_fill_ai_respects_fractional_coverage_and_lasso_fill_edits() {
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    for depth in [8, 16] {
+        let (mut s, backend) = smart_fill_session(depth);
+        s.edit("selection", |doc, _| {
+            let mut sel = Surface::new(PixelFormat::GRAY8);
+            sel.fill_rect(Rect::new(26, 16, 30, 20), &[0.5]);
+            doc.selection = Some(sel);
+            Ok(())
+        })
+        .unwrap();
+        let old = px(&s, 27, 17)[0];
+        let outside = px(&s, 31, 17);
+        s.execute("edit.contentAwareFill", json!({"method":"ai","output":"current"})).unwrap();
+        assert!((px(&s, 27, 17)[0] - (old + (0.4 - old) * (128. / 255.))).abs() < 0.01);
+        assert_eq!(px(&s, 31, 17), outside);
+        assert_eq!(backend.1.lock().unwrap()[0].mask.iter().filter(|v| **v > 0.).count(), 16);
+        assert!(s.undo());
+        s.execute("edit.contentAwareFill", json!({"method":"ai","output":"new","fillEdits":[{"op":"add","points":[[34,16],[38,16],[38,20],[34,20]]}]}))
+            .unwrap();
+        assert!((px(&s, 27, 17)[3] - 128. / 255.).abs() < 0.01);
+        assert!(px(&s, 35, 17)[3] > 0.99, "lasso-added pixels have full coverage");
+        assert_eq!(px(&s, 31, 17)[3], 0.);
+    }
+}
+#[test]
+fn smart_fill_preview_apply_rechecks_source_command_authorization() {
+    fn deny(id: &str, _: &Value) -> Result<()> {
+        if id == "edit.contentAwareFill" { Err(EngineError::Other("denied fill".into())) } else { Ok(()) }
+    }
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    let (mut s, backend) = smart_fill_session(8);
+    let before = s.active().unwrap().doc.clone();
+    let preview = s.execute("edit.contentAwareFill", json!({"method":"ai","preview":true})).unwrap();
+    s.authorize = Some(deny);
+    let error = s.execute("fill.preview.apply", json!({"id":preview["previewId"]})).unwrap_err();
+    assert!(error.to_string().contains("denied fill"));
+    assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    s.authorize = None;
+    s.execute("fill.preview.discard", json!({"id":preview["previewId"]})).unwrap();
+    assert!(s.removal_service().admit("lama", 0, u64::MAX).is_ok());
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn smart_fill_cancelled_forward_keeps_admission_until_the_backend_drains() {
+    struct Blocking {
+        entered: std::sync::mpsc::Sender<()>,
+        exit: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl photocraft_ml::RemovalBackend for Blocking {
+        fn ready(&self, id: &str) -> bool {
+            id == "lama"
+        }
+        fn infer(
+            &self,
+            _: &str,
+            input: &photocraft_ml::RemovalInput,
+            _: &dyn photocraft_ml::RemovalControl,
+        ) -> photocraft_ml::Result<photocraft_ml::RemovalOutput> {
+            self.entered.send(()).unwrap();
+            self.exit.lock().unwrap().recv().unwrap();
+            Ok(photocraft_ml::RemovalOutput { edit_alpha: None, rgb: vec![0.4; input.rgb.len()], inference_scale: 1., load_ms: 0., forward_ms: 0. })
+        }
+    }
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    let (mut s, _) = smart_fill_session(8);
+    let before = s.active().unwrap().doc.clone();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+    s.set_removal_service(std::sync::Arc::new(
+        photocraft_ml::RemovalService::default().with_backend(std::sync::Arc::new(Blocking { entered: entered_tx, exit: std::sync::Mutex::new(exit_rx) })),
+    ));
+    let started = s.start("edit.contentAwareFill", json!({"method":"ai","preview":true})).unwrap();
+    assert!(matches!(started, crate::jobs::Started::Job(_)));
+    entered_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+    s.execute("fill.preview.discard", json!({})).unwrap();
+    assert!(matches!(s.removal_service().admit("lama", 0, u64::MAX), Err(photocraft_ml::Error::Busy)));
+    exit_tx.send(()).unwrap();
+    s.join_cancelled_jobs();
+    s.poll_jobs();
+    assert!(s.removal_service().admit("lama", 0, u64::MAX).is_ok());
+    assert_eq!(s.fill_preview_status()["ready"], false);
+    assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+}
+
+#[test]
+fn smart_fill_ai_samples_the_composite_and_preserves_explicit_target_activation() {
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    let (mut s, _) = smart_fill_session(8);
+    let source = s.active().unwrap().active_layer.unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let empty = s.active().unwrap().active_layer.unwrap();
+    s.execute("edit.contentAwareFill", json!({"method":"ai","layer":source.0,"output":"current"})).unwrap();
+    assert_eq!(s.active().unwrap().active_layer, Some(empty), "filling another named layer must preserve active-layer state");
+    assert!((s.active().unwrap().doc.layer(source).unwrap().surface().unwrap().pixel(30, 20)[0] - 0.4).abs() < 0.01);
+    s.execute("edit.contentAwareFill", json!({"method":"ai","sampleAllLayers":true,"output":"new"})).unwrap();
+    assert!((px(&s, 30, 20)[0] - 0.4).abs() < 0.01);
+    assert!(px(&s, 30, 20)[3] > 0.99);
+    assert_eq!(px(&s, 1, 1)[3], 0.);
+}
+#[test]
+fn smart_fill_ai_rejects_hdr_and_non_srgb_context_without_editing() {
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    let (mut hdr, backend) = smart_fill_session(32);
+    let before = hdr.active().unwrap().doc.clone();
+    assert!(hdr.execute("edit.contentAwareFill", json!({"method":"ai"})).is_err());
+    assert!(std::sync::Arc::ptr_eq(&before, &hdr.active().unwrap().doc));
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let (mut s, backend) = smart_fill_session(8);
+    s.edit("profile", |doc, _| {
+        doc.icc_profile = Some(photocraft_cms::Builtin::AdobeRgbCompat.profile().to_bytes());
+        Ok(())
+    })
+    .unwrap();
+    let before = s.active().unwrap().doc.clone();
+    assert!(s.execute("edit.contentAwareFill", json!({"method":"ai"})).is_err());
+    assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc));
+    assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn smart_fill_review_feathered_empty_targets_keep_straight_rgb() {
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    for depth in [8, 16] {
+        for output in ["current", "new", "duplicate"] {
+            let (mut s, _) = smart_fill_session(depth);
+            s.execute("layer.new.layer", json!({})).unwrap();
+            s.execute("select.rect", json!({"x":30,"y":20,"width":1,"height":1})).unwrap();
+            s.edit("feather", |doc, _| {
+                doc.selection.as_mut().unwrap().write_pixel(30, 20, &[0.5]);
+                Ok(())
+            })
+            .unwrap();
+            let before = s.active().unwrap().doc.clone();
+            s.execute("edit.contentAwareFill", json!({"method":"ai","sampleAllLayers":true,"output":output})).unwrap();
+            let pixel = px(&s, 30, 20);
+            assert!((pixel[0] - 0.4).abs() < 0.01, "{output} at depth {depth}: straight RGB must retain the generated colour, got {pixel:?}");
+            assert!((pixel[3] - 0.5).abs() < 0.01, "{output} at depth {depth}: coverage belongs in alpha once, got {pixel:?}");
+            assert!(s.undo());
+            assert_eq!(s.active().unwrap().doc, before);
+        }
+    }
+}
+
+#[test]
+fn smart_fill_review_preview_commands_do_not_anchor_floating_selections() {
+    for (id, params) in [("fill.preview.status", json!({})), ("fill.preview.status", json!({"unexpected":true})), ("fill.preview.discard", json!({"id":"bad"}))]
+    {
+        let mut s = blob_session(8);
+        s.execute("select.float", json!({"dx":1,"dy":0})).unwrap();
+        let before = s.active().unwrap().doc.clone();
+        let steps = s.active().unwrap().history.past_len();
+        let _ = s.execute(id, params);
+        assert_eq!(s.active().unwrap().doc, before, "{id} must not anchor a floating selection");
+        assert_eq!(s.active().unwrap().history.past_len(), steps);
+    }
+}
+
+#[test]
+fn smart_fill_review_new_output_does_not_inherit_source_alpha_lock() {
+    let _serial = crate::retouch_cmds::tests::lock_ai_tests();
+    let (mut s, _) = smart_fill_session(8);
+    let source = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.edit("lock source alpha", |doc, _| {
+        doc.layer_mut(photocraft_doc::LayerId(source)).unwrap().locks.transparency = true;
+        Ok(())
+    })
+    .unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let result = s.execute("edit.contentAwareFill", json!({"method":"ai","sampleAllLayers":true,"output":"new"})).unwrap();
+    assert_ne!(result["layer"], source);
+    let pixel = px(&s, 30, 20);
+    assert!(pixel[3] > 0.99, "a new unlocked output layer must contain the generated fill, got {pixel:?}");
+    assert!((pixel[0] - 0.4).abs() < 0.01);
+    assert_eq!(s.active().unwrap().doc.layer(photocraft_doc::LayerId(source)).unwrap(), before.layer(photocraft_doc::LayerId(source)).unwrap());
+    assert!(s.undo());
+    assert_eq!(s.active().unwrap().doc, before);
+}

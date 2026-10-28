@@ -732,6 +732,7 @@ impl Session {
         self.jobs.spawn = true;
         let r = run(self, label, lock_document, work, apply);
         self.clear_stale_removal_preview();
+        self.clear_stale_fill_preview();
         self.jobs.spawn = false;
         let pending = self.jobs.pending.take();
         match (r, pending) {
@@ -887,6 +888,7 @@ impl Session {
         // The offer belongs to this one dispatch. Early errors drop it locally, including
         // authorization, validation, floating-selection and admission failures.
         self.clear_stale_removal_preview();
+        self.clear_stale_fill_preview();
         let live_commit = self.live_commit.take();
         let spec = crate::commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         // Params are named fields: anything but an object (or null, meaning none) is a caller
@@ -903,6 +905,9 @@ impl Session {
         crate::model_cmds::refuse_playback(self, id)?;
         if id == "paint.remove" {
             crate::retouch_cmds::validate_remove_options(self, &params)?;
+        }
+        if id == "edit.contentAwareFill" {
+            crate::edit_menu_cmds::validate_smart_fill(self, &params)?;
         }
         let _authorization = AuthorizationScope::enter(self.authorize);
         let _document = crate::doc_path::scope(self.active().and_then(|d| d.path.as_deref()).map(std::path::Path::new));
@@ -978,6 +983,7 @@ impl Session {
             self.actions.recording = recording;
         }
         self.clear_stale_removal_preview();
+        self.clear_stale_fill_preview();
         self.jobs.spawn = false;
         self.coalesce_request = None;
         self.color_restrict = None;
@@ -1058,7 +1064,13 @@ impl Session {
         nested_from: Option<usize>,
         pre_selected: Option<&[LayerId]>,
     ) {
-        if id == "paint.remove" && result.get("preview").and_then(Value::as_bool) == Some(true) {
+        if matches!(id, "paint.remove" | "edit.contentAwareFill") && result.get("preview").and_then(Value::as_bool) == Some(true) {
+            return;
+        }
+        if id == "fill.preview.apply" {
+            if let Some(params) = result.as_object_mut().and_then(|object| object.remove("__fillParams")) {
+                self.after_command("edit.contentAwareFill", params, true, nested_from, pre_selected);
+            }
             return;
         }
         if id == "remove.preview.apply" {

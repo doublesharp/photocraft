@@ -41,7 +41,7 @@ pub(super) struct Preview {
 impl Preview {
     /// Takes the result of the preview of state `generation`: an image to upload, or the error,
     /// which stands for that state until it changes (the same preview is not started again).
-    fn finish(&mut self, generation: u64, r: Result<(Rect, egui::ColorImage), String>) {
+    pub(super) fn finish(&mut self, generation: u64, r: Result<(Rect, egui::ColorImage), String>) {
         self.shown = generation;
         self.tex = None;
         match r {
@@ -64,6 +64,10 @@ const NOTHING_TO_SAMPLE: &str = "nothing to sample from: the sampling area has n
 /// The plan of the current state (without strokes when `strokes` is false).
 pub(super) fn plan_params(w: &CafWorkspace, strokes: bool) -> Value {
     let o = &w.opts;
+    if o.method == "ai" {
+        return json!({"method":"ai", "modelId":"lama", "sampling":"rectangular", "sampleAllLayers":o.sample_all,
+            "output":o.output,"layer":w.layer.0,"fillEdits":w.fill_edits});
+    }
     let mut p = json!({
         "sampling": o.sampling,
         "sampleAllLayers": o.sample_all,
@@ -90,7 +94,12 @@ pub(super) fn points_limit() -> String {
 pub(super) fn compute_base(app: &PhotocraftApp, w: &CafWorkspace) -> Result<Base, String> {
     let st = app.session.active().ok_or("no document")?;
     let mut p = plan_params(w, false);
-    let custom = w.opts.sampling == "custom";
+    if w.opts.method == "ai" {
+        // Check context size and the frozen configured allowance before the ordinary
+        // CAF planner reads source pixels or allocates its full-resolution masks.
+        photocraft_engine::edit_menu_cmds::validate_ai_smart_fill(&app.session, &p).map_err(|error| error.to_string())?;
+    }
+    let custom = w.opts.method != "ai" && w.opts.sampling == "custom";
     if custom {
         p["sampling"] = json!("rectangular");
     }
@@ -171,6 +180,10 @@ pub(super) fn refresh(app: &mut PhotocraftApp) {
 
 /// Computes the preview now, on this thread (tests and the control channel).
 pub(super) fn wait_preview(app: &mut PhotocraftApp) -> Result<(), String> {
+    if app.distort.caf.as_ref().is_some_and(|w| w.opts.method == "ai") {
+        return super::ai::wait(app);
+    }
+    super::ai::clear(app);
     let (doc, layer, p, want, limit) = {
         let w = app.distort.caf.as_ref().ok_or("Content-Aware Fill is not open")?;
         let st = app.session.active().ok_or("no document")?;
@@ -256,6 +269,14 @@ fn compute_preview(
 /// collects a finished one.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn drive_preview(app: &mut PhotocraftApp, ctx: &egui::Context, dragging: bool) {
+    if app.distort.caf.as_ref().is_some_and(|w| w.opts.method == "ai") {
+        if let Some((_, _, job)) = app.distort.caf.as_ref().and_then(|w| w.preview.running.as_ref()) {
+            job.cancel();
+        }
+        super::ai::drive(app, ctx, dragging);
+        return;
+    }
+    super::ai::clear(app);
     let doc = app.session.active().map(|s| s.doc.clone());
     let Some(w) = app.distort.caf.as_mut() else { return };
     let pv = &mut w.preview;

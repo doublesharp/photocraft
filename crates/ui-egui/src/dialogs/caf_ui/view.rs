@@ -122,8 +122,49 @@ fn caf_props_panel(
     reset_what: &mut Option<&str>,
     new_sampling: &mut Option<&str>,
     rebase_needed: &mut bool,
+    model_ui: (&mut bool, Option<&str>),
 ) {
+    let (models, readiness) = model_ui;
     ui.spacing_mut().item_spacing.y = 6.0;
+    ui.horizontal(|ui| {
+        ui.label(tl!("Method"));
+        widgets::dropdown(
+            ui,
+            "caf-method",
+            tl!("Method"),
+            &mut w.opts.method,
+            &[("ai".to_string(), tl!("LaMa (AI)")), ("classical".to_string(), tl!("Classical"))],
+            160.0,
+        );
+    });
+    if widgets::secondary_button(ui, tl!("Models…"), 110.0).clicked() {
+        *models = true;
+    }
+    widgets::hairline(ui);
+    if w.opts.method == "ai" {
+        ui.label(tl!("LaMa fills from the surrounding image. Use the Lasso to edit the fill area."));
+        if let Some(message) = readiness {
+            ui.label(egui::RichText::new(message).color(t.text_dim));
+        }
+        if widgets::checkbox(ui, &mut w.opts.sample_all, tl!("Sample All Layers")).changed() {
+            *rebase_needed = true;
+        }
+        widgets::hairline(ui);
+        widgets::section_label(ui, tl!("Output Settings"));
+        ui.horizontal(|ui| {
+            ui.label(tl!("Output To"));
+            let options =
+                [("current".to_string(), tl!("Current Layer")), ("new".to_string(), tl!("New Layer")), ("duplicate".to_string(), tl!("Duplicate Layer"))];
+            widgets::dropdown(ui, "caf-output", tl!("Output To"), &mut w.opts.output, &options, 140.0);
+        });
+        if w.ai.applied {
+            ui.label(tl!("Fill applied. Change the fill area or settings to generate another preview."));
+        }
+        if let Some(message) = w.error.as_ref().or(w.preview.error.as_ref()) {
+            ui.label(egui::RichText::new(message.as_str()).color(t.danger).size(11.0));
+        }
+        return;
+    }
     egui::CollapsingHeader::new(tl!("Sampling Area Overlay")).id_salt("caf-overlay").default_open(false).show(ui, |ui| {
         widgets::checkbox(ui, &mut w.opts.show_overlay, tl!("Show Sampling Area"));
         widgets::slider_row(ui, tl!("Opacity"), &mut w.opts.opacity, 0.0..=100.0, "%", None);
@@ -263,6 +304,11 @@ fn caf_preview_panel(ui: &mut egui::Ui, painter: &egui::Painter, t: &Tokens, w: 
 
 /// Draws the workspace (a full-window layer over the app).
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    // The model manager is drawn before this full-window workspace. Keep the workspace
+    // intact while allowing that dialog to remain visible and receive input.
+    if super::ai::manager_open(app) {
+        return;
+    }
     // An Apply (or anything else) changed the document: refresh.
     let rev = app.session.active().map(|s| s.revision);
     if app.distort.caf.as_ref().is_some_and(|w| Some(w.revision) != rev) {
@@ -279,6 +325,9 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut reset_what: Option<&str> = None;
     let mut rebase_needed = false;
     let mut dragging = false;
+    let mut models = false;
+    let readiness = super::ai::readiness(app).err();
+    let document_context = app.session.active().map(|st| (st.doc.id.0, st.revision));
     egui::Area::new(egui::Id::unique("caf-workspace")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
         let Some(w) = app.distort.caf.as_mut() else { return };
         let before = w.opts.clone();
@@ -314,7 +363,9 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let mut strip = ui.new_child(egui::UiBuilder::new().max_rect(left.shrink2(vec2(6.0, 8.0))));
         strip.spacing_mut().item_spacing.y = 4.0;
         for tool in [CafTool::Brush, CafTool::Lasso, CafTool::Hand, CafTool::Zoom] {
-            if crate::icons::button(&mut strip, tool_icon(tool), 34.0, w.tool == tool, &tool_tip(tool)).clicked() {
+            let enabled = w.opts.method != "ai" || tool != CafTool::Brush;
+            let clicked = strip.add_enabled_ui(enabled, |ui| crate::icons::button(ui, tool_icon(tool), 34.0, w.tool == tool, &tool_tip(tool)).clicked()).inner;
+            if clicked {
                 w.tool = tool;
             }
         }
@@ -326,7 +377,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ui.new_child(egui::UiBuilder::new().max_rect(ERect::from_min_max(right.min + vec2(14.0, 12.0), pos2(right.right() - 14.0, right.bottom() - 60.0))));
         egui::ScrollArea::vertical()
             .id_salt("caf-props")
-            .show(&mut props, |ui| caf_props_panel(ui, w, &t, &mut reset_what, &mut new_sampling, &mut rebase_needed));
+            .show(&mut props, |ui| caf_props_panel(ui, w, &t, &mut reset_what, &mut new_sampling, &mut rebase_needed, (&mut models, readiness.as_deref())));
         // Footer, in Photoshop's order on every platform: reset all at the left, then OK, Apply,
         // Cancel against the right edge.
         let foot = ERect::from_min_size(pos2(right.left() + 10.0, right.bottom() - 48.0), vec2(PANEL_W - 20.0, 32.0));
@@ -334,12 +385,17 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if widgets::secondary_button(&mut fb, tl!("Cancel"), 70.0).clicked() {
             action = Some("cancel");
         }
-        if widgets::secondary_button(&mut fb, tl!("Apply"), 70.0).clicked() {
-            action = Some("apply");
-        }
-        if widgets::primary_button(&mut fb, tl!("OK"), 64.0).clicked() {
-            action = Some("ok");
-        }
+        let can_apply = super::ai::can_apply(w);
+        fb.add_enabled_ui(can_apply, |ui| {
+            if widgets::secondary_button(ui, tl!("Apply"), 70.0).clicked() {
+                action = Some("apply");
+            }
+        });
+        fb.add_enabled_ui(can_apply || super::ai::applied_in(w, document_context), |ui| {
+            if widgets::primary_button(ui, tl!("OK"), 64.0).clicked() {
+                action = Some("ok");
+            }
+        });
         if crate::icons::button(&mut fb, "undo-2", 24.0, false, tl!("Reset")).clicked() {
             reset_what = Some("all");
         }
@@ -441,10 +497,20 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         // Settings changed in the panel: the overlay and the preview follow.
         if w.opts != before {
+            if w.opts.method != before.method {
+                rebase_needed = true;
+                if w.opts.method == "ai" && w.tool == CafTool::Brush {
+                    w.tool = CafTool::Lasso;
+                }
+            }
             w.overlay_dirty = true;
             w.stale();
         }
     });
+    if models {
+        super::ai::open_models(app);
+        return;
+    }
     if let Some(s) = new_sampling {
         set_sampling(app, s);
     }

@@ -39,6 +39,7 @@ mod removal_preview;
 pub mod select_mask_edits;
 pub mod shell_commands;
 pub mod shortcut_sets;
+mod smart_fill_preview;
 pub mod snap;
 pub use variables_cmds::{export_data_sets_with, import_data_sets_text};
 pub use video_cmds::render_video_with;
@@ -228,6 +229,8 @@ pub struct Session {
     removal_service: Arc<photocraft_ml::RemovalService>,
     removal_preview: Option<removal_preview::Preview>,
     removal_preview_sequence: u64,
+    fill_preview: Option<smart_fill_preview::Preview>,
+    fill_preview_sequence: u64,
     /// Release checks use an injected platform transport; no network I/O in the engine.
     pub updates: updates_cmds::Updates,
     /// Edit menu state: Fade source, custom shape library (see `edit_menu_cmds`).

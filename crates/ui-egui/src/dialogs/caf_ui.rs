@@ -35,6 +35,7 @@ use crate::canvas::ToolEvent;
 use crate::theme::Tokens;
 use crate::widgets;
 
+mod ai;
 mod controls;
 mod lifecycle;
 mod preview;
@@ -98,6 +99,8 @@ const LASSO_OPS: [&str; 4] = ["new", "add", "subtract", "intersect"];
 /// The panel's settings (remembered between uses).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CafOpts {
+    /// classical | ai (LaMa)
+    pub method: String,
     pub show_overlay: bool,
     /// Overlay opacity, 0..100.
     pub opacity: f32,
@@ -120,6 +123,7 @@ pub struct CafOpts {
 impl Default for CafOpts {
     fn default() -> Self {
         CafOpts {
+            method: "classical".into(),
             show_overlay: true,
             opacity: 50.0,
             color: OVERLAY_COLOR,
@@ -138,6 +142,9 @@ impl Default for CafOpts {
 impl CafOpts {
     /// Applies the settings named in `v` (control channel and remembered keys); others stay.
     pub fn apply(&mut self, v: &Value) -> Result<(), String> {
+        if let Some(method) = v.get("method") {
+            self.method = method.as_str().filter(|m| matches!(*m, "classical" | "ai")).ok_or("method must be classical or ai")?.to_string();
+        }
         let flag = |k: &str| v.get(k).and_then(Value::as_bool);
         let text = |k: &str| v.get(k).and_then(Value::as_str);
         for (k, slot) in [
@@ -185,6 +192,7 @@ impl CafOpts {
     /// The settings as [`CafOpts::apply`] reads them.
     pub fn to_json(&self) -> Value {
         json!({
+            "method": self.method,
             "showOverlay": self.show_overlay,
             "opacity": self.opacity,
             "color": self.color,
@@ -261,6 +269,7 @@ pub struct CafWorkspace {
     center: [f64; 2],
     hover: Option<[f64; 2]>,
     preview: Preview,
+    ai: ai::State,
     pub error: Option<String>,
 }
 
@@ -283,7 +292,10 @@ impl CafWorkspace {
             "sampledProxyPixels": sampled,
             "proxyScale": self.k,
             "settings": self.opts.to_json(),
-            "previewReady": self.preview.tex.is_some() && self.preview.shown == self.preview.want,
+            "previewReady": (self.preview.tex.is_some() || self.ai.id.is_some()) && self.preview.shown == self.preview.want,
+            "previewId": self.ai.id,
+            "applied": self.ai.applied,
+            "previewJob": self.ai.job.map(|(_, id)| id.0),
             "previewError": self.preview.error,
             "error": self.error,
         })
@@ -347,10 +359,14 @@ impl CafWorkspace {
 
     /// The preview is out of date.
     fn stale(&mut self) {
-        self.preview.want += 1;
+        self.preview.want = self.preview.want.saturating_add(1);
     }
 
     fn begin_stroke(&mut self, p: [f64; 2], alt: bool) {
+        if self.opts.method == "ai" {
+            self.error = Some("LaMa uses the surrounding image automatically; choose Classical to paint a custom sampling area".into());
+            return;
+        }
         // The engine takes at most MAX_CAF_EDITS strokes and MAX_CAF_POINTS points in all: the
         // brush stops there, so Apply and the preview never fail on what was painted.
         if self.strokes.len() >= MAX_CAF_EDITS {

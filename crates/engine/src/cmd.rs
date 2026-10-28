@@ -1243,6 +1243,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::retouch_cmds::specs());
     v.extend(crate::model_cmds::specs());
     v.extend(crate::removal_preview::specs());
+    v.extend(crate::smart_fill_preview::specs());
     v.extend(crate::redeye_cmds::specs());
     v.extend(crate::image_cmds::specs());
     v.extend(crate::perspective_crop_cmds::specs());

@@ -3,6 +3,9 @@ use super::{
     pixel_layer_id, str_or, to_rgba, writable_surface,
 };
 
+mod smart_fill;
+pub(super) use smart_fill::validate as validate_smart_fill;
+
 // ------------------------------------------------------------------ Content-Aware Fill
 
 pub(super) fn can_caf(s: &Session) -> std::result::Result<(), String> {
@@ -40,6 +43,9 @@ fn rect_param(p: &Value, key: &str, cmd: &str) -> Result<Rect> {
 }
 
 pub(super) fn content_aware_fill(s: &mut Session, p: &Value) -> Result<Value> {
+    if p.get("method").and_then(Value::as_str) == Some("ai") {
+        return smart_fill::run(s, p);
+    }
     content_aware_fill_as(s, p, "edit.contentAwareFill", "Content-Aware Fill")
 }
 
@@ -432,7 +438,7 @@ fn content_aware_fill_as(s: &mut Session, p: &Value, cmd: &'static str, label: &
                     }
                 });
             }
-            Ok((layer, rect, fmt, output, FilledWindow { filled, bounds: (bx0, by0, bx1, by1), original, cover, n_hole }))
+            Ok((layer, rect, fmt, output, FilledWindow { filled, bounds: (bx0, by0, bx1, by1), original, cover, n_hole, alpha_aware: false }))
         },
         move |s, (layer, rect, fmt, output, done)| apply_content_aware_fill(s, label, layer, &output, fmt, rect, done),
     )
@@ -447,6 +453,8 @@ struct FilledWindow {
     original: Vec<f32>,
     cover: Vec<f32>,
     n_hole: usize,
+    /// LaMa emits straight RGB; interpolate premultiplied colour at feathered edges.
+    alpha_aware: bool,
 }
 
 /// `f(window index, index over the bounds, coverage)` for each selected pixel of a
@@ -485,50 +493,92 @@ fn mask_bounds(w: usize, h: usize, m: &[bool]) -> (usize, usize, usize, usize) {
 /// Write a Content-Aware Fill result (the job's apply step): into the layer, a new layer or a
 /// duplicate, as one undo step.
 fn apply_content_aware_fill(s: &mut Session, label: &str, id: LayerId, output: &str, fmt: PixelFormat, window: Rect, done: FilledWindow) -> Result<Value> {
+    let count = done.n_hole;
+    let layer = s.edit(label, |doc, active| apply_filled_document(doc, active, id, output, fmt, window, done))?;
+    Ok(json!({"layer": layer.0, "filled": count, "window": [window.x0, window.y0, window.width(), window.height()]}))
+}
+
+fn apply_filled_document(
+    doc: &mut Document,
+    active: &mut Option<LayerId>,
+    id: LayerId,
+    output: &str,
+    fmt: PixelFormat,
+    window: Rect,
+    done: FilledWindow,
+) -> Result<LayerId> {
     let n = fmt.channels();
     let (w, h) = (window.width() as usize, window.height() as usize);
-    let FilledWindow { mut filled, bounds, original, cover, n_hole } = done;
-    let layer = s.edit(label, |doc, active| {
-        let target = match output {
-            "new" => {
-                let mut l = Layer::raster(doc.next_layer_name("Content-Aware Fill"), PixelFormat { alpha: true, ..fmt });
-                let mut px = vec![0.0f32; w * h * n.max(1)];
-                let lf = l.surface().map(|s| s.format()).unwrap_or(fmt);
-                let ln = lf.channels();
-                px.resize(w * h * ln, 0.0);
-                each_selected(w, bounds, &cover, |i, _, c| {
-                    let rgba = to_rgba(&fmt, &filled[i * n..(i + 1) * n]);
-                    let mut enc = [0.0f32; 8];
-                    from_rgba_into(&lf, [rgba[0], rgba[1], rgba[2], rgba[3] * c], &mut enc);
-                    px[i * ln..(i + 1) * ln].copy_from_slice(&enc[..ln]);
-                });
-                if let Some(s) = l.surface_mut() {
-                    s.write_region(window, &px);
-                    s.prune();
-                }
-                let nid = crate::layer_place::insert_new(doc, Some(id), l, crate::layer_place::Place::Above);
-                *active = Some(nid);
-                return Ok(nid);
+    let FilledWindow { mut filled, bounds, original, cover, alpha_aware, .. } = done;
+    let target = match output {
+        "new" => {
+            let mut l = Layer::raster(doc.next_layer_name("Content-Aware Fill"), PixelFormat { alpha: true, ..fmt });
+            let mut px = vec![0.0f32; w * h * n.max(1)];
+            let lf = l.surface().map(|s| s.format()).unwrap_or(fmt);
+            let ln = lf.channels();
+            px.resize(w * h * ln, 0.0);
+            each_selected(w, bounds, &cover, |i, _, c| {
+                let rgba = to_rgba(&fmt, &filled[i * n..(i + 1) * n]);
+                let mut enc = [0.0f32; 8];
+                from_rgba_into(&lf, [rgba[0], rgba[1], rgba[2], rgba[3] * c], &mut enc);
+                px[i * ln..(i + 1) * ln].copy_from_slice(&enc[..ln]);
+            });
+            if let Some(s) = l.surface_mut() {
+                s.write_region(window, &px);
+                s.prune();
             }
-            "duplicate" => {
-                let mut dup = doc.layer(id).ok_or(EngineError::NoLayer(id))?.duplicate();
-                dup.name = doc.copy_name(&dup.name);
-                let nid = doc.insert_above(Some(id), dup);
-                *active = Some(nid);
-                nid
+            let nid = crate::layer_place::insert_new(doc, Some(id), l, crate::layer_place::Place::Above);
+            *active = Some(nid);
+            return Ok(nid);
+        }
+        "duplicate" => {
+            let mut dup = doc.layer(id).ok_or(EngineError::NoLayer(id))?.duplicate();
+            dup.name = doc.copy_name(&dup.name);
+            let nid = doc.insert_above(Some(id), dup);
+            *active = Some(nid);
+            nid
+        }
+        _ => id,
+    };
+    let surf = writable_surface(doc, target)?;
+    // Preserve the Classical interpolation. AI-generated straight RGBA needs an
+    // alpha-aware crossfade so feathering an empty target does not darken RGB twice.
+    let mut malformed = false;
+    each_selected(w, bounds, &cover, |i, k, c| {
+        if alpha_aware && fmt.alpha {
+            let pixel = i.checked_mul(n).and_then(|start| start.checked_add(n).and_then(|end| filled.get_mut(start..end)));
+            let under = k.checked_mul(n).and_then(|start| start.checked_add(n).and_then(|end| original.get(start..end)));
+            let (Some(pixel), Some(under)) = (pixel, under) else {
+                malformed = true;
+                return;
+            };
+            let (Some(a), Some(b)) = (pixel.get(3).copied(), under.get(3).copied()) else {
+                malformed = true;
+                return;
+            };
+            let alpha = b + (a - b) * c;
+            for (value, base) in pixel.iter_mut().take(3).zip(under.iter().take(3)) {
+                *value = if alpha > 0.0 { (*value * a * c + *base * b * (1.0 - c)) / alpha } else { *base };
             }
-            _ => id,
-        };
-        let surf = writable_surface(doc, target)?;
-        // The fill blended in by the coverage (elsewhere it is the original).
-        each_selected(w, bounds, &cover, |i, k, c| {
-            for ch in 0..n {
-                let (j, o) = (i * n + ch, k * n + ch);
-                filled[j] = original[o] + (filled[j] - original[o]) * c;
+            if let Some(value) = pixel.get_mut(3) {
+                *value = alpha;
             }
-        });
-        surf.write_region(window, &filled);
-        Ok(target)
-    })?;
-    Ok(json!({"layer": layer.0, "filled": n_hole, "window": [window.x0, window.y0, window.width(), window.height()]}))
+            return;
+        }
+        for ch in 0..n {
+            let (j, o) = (i * n + ch, k * n + ch);
+            filled[j] = original[o] + (filled[j] - original[o]) * c;
+        }
+    });
+    if malformed {
+        return Err(bad("edit.contentAwareFill", "Smart Fill pixel buffers do not match their geometry"));
+    }
+    surf.write_region(window, &filled);
+    Ok(target)
+}
+
+/// Read-only LaMa context and memory validation for UI mask/outline construction.
+/// No model is loaded, no pixels are read and no process-wide permit is reserved.
+pub fn validate_ai_smart_fill(s: &Session, p: &Value) -> Result<()> {
+    smart_fill::preflight(s, p)
 }

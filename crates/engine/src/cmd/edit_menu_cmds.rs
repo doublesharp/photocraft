@@ -292,6 +292,9 @@ macro_rules! spec {
 }
 
 mod content_aware;
+pub(crate) fn validate_smart_fill(s: &Session, p: &Value) -> Result<()> {
+    content_aware::validate_smart_fill(s, p)
+}
 mod content_aware_scale;
 mod fade;
 mod find_replace;
@@ -299,7 +302,7 @@ mod presets;
 mod purge;
 
 pub(crate) use content_aware::channel_mask;
-pub use content_aware::{CafPlan, FillEdit, MAX_CAF_EDITS, MAX_CAF_POINTS, SelOp, content_aware_plan, content_aware_plan_with};
+pub use content_aware::{CafPlan, FillEdit, MAX_CAF_EDITS, MAX_CAF_POINTS, SelOp, content_aware_plan, content_aware_plan_with, validate_ai_smart_fill};
 use content_aware::{can_caf, content_aware_fill, delete_and_fill};
 pub use content_aware_scale::ContentAwareScalePreview;
 use content_aware_scale::content_aware_scale;
@@ -335,7 +338,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Content-Aware Fill…",
             ["Edit"],
             None,
-            r##"{"sampling":"auto|rectangular|custom","margin":px?,"area":[x,y,w,h]?,"channel":index|name?,"samplingStrokes":[{"mode":"add|subtract","size":px,"points":[[x,y],…]}]? (the workspace's Sampling Brush, after the sampling option's area; added strokes may lie outside the window),"fillEdits":[{"op":"new|add|subtract|intersect","points":[[x,y],…]}|{"op":"expand|contract","by":px}]? (the workspace's lasso edits of the fill area, in order),"sampleAllLayers":bool=false,"colorAdaptation":"default|none|high|veryHigh","rotationAdaptation":"none|low|medium|high|full","scale":bool=false,"mirror":bool=false,"output":"current|new|duplicate","layer":id?=active (the layer filled and sampled),"seed":u64=1}"##,
+            r##"{"method":"classical|ai"="classical","modelId":"lama"?,"modelSha256":str?,"preview":bool=false (AI: retain a candidate for fill.preview.apply/discard; no inference on Apply),"sampling":"auto|rectangular|custom","margin":px?,"area":[x,y,w,h]?,"channel":index|name?,"samplingStrokes":[{"mode":"add|subtract","size":px,"points":[[x,y],…]}]? (the workspace's Sampling Brush, after the sampling option's area; added strokes may lie outside the window),"fillEdits":[{"op":"new|add|subtract|intersect","points":[[x,y],…]}|{"op":"expand|contract","by":px}]? (the workspace's lasso edits of the fill area, in order),"sampleAllLayers":bool=false,"colorAdaptation":"default|none|high|veryHigh","rotationAdaptation":"none|low|medium|high|full","scale":bool=false,"mirror":bool=false,"output":"current|new|duplicate","layer":id?=active (the layer filled and sampled),"seed":u64=1}"##,
             can_caf,
             content_aware_fill
         ),
