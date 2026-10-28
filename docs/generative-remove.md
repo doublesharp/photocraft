@@ -74,7 +74,7 @@ Earlier checks with the previous `f9d4b2f9` pin remain historical. Full managed 
 
 Historical `f9d4b2f9` release measurements on a dense procedural 6000×4000 image processed two independent regions with LaMa and OSOR in 22.98 seconds on the first run and 23.19–25.76 seconds on repetitions, restoring the exact document with Undo. Sampled whole-process RSS peaked at about 12.0 GiB for these small crops; it does not qualify larger crops or establish a physical-memory cap. No current-pin 24 MP release measurement was performed.
 
-The current quick performance gate exited successfully, but marked the shared-host run as contended. Regression comparison was skipped because the published baseline is from an M4 Pro and this host is an M2 Max. Quick mode uses smaller documents and does not apply full-size performance budgets. No baseline or budget was changed; this run does not establish a performance improvement.
+The historical `1b299a1d` quick performance gate exited successfully, but marked the shared-host run as contended. Regression comparison was skipped because the published baseline is from an M4 Pro and this host is an M2 Max. Quick mode uses smaller documents and does not apply full-size performance budgets. No baseline or budget was changed; this run does not establish a performance improvement.
 
 New setup strings use English fallback where translations are missing. These checks do not establish Photoshop parity, broad removal quality, signed packaging, or Linux/Windows runtime acceptance. Moebius refinement has no adapter; the prior broad pilot did not justify adding it unconditionally. Prompted Generative Fill/Expand and learned browser execution remain separate work.
 
