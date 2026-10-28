@@ -71,7 +71,7 @@ no new PyTorch reference run was performed. This qualifies that bounded CLI scen
 separately from the application's 512 px long-side bridge and broader removal quality.
 Stage-synchronized CLI timings are diagnostic, not normal application performance.
 
-The current pin also passed the retained-bundle Metal/F32 service smoke: cold and
+That historical `1b299a1d` pin also passed the retained-bundle Metal/F32 service smoke: cold and
 warm 101×47 input restored finite, source-sized RGB/alpha with zero repeat difference
 and retained-output admission. A separate, preconfigured native macOS app run on a
 procedural 256×192 image passed unrelated preference/brush/view writes during OSOR,
@@ -183,8 +183,21 @@ the pinned manifest digest and shared-host timings; this smoke does not establis
 independent-reference accuracy or visual removal quality.
 
 The Cargo package and Rust library are named `osor`; the Git repository remains
-`doublesharp/osor-rs`. Revision `94584f64` is initially available only in the supplied
-local checkout. A fresh remote checkout requires that immutable commit to be
-published; local offline validation imports its Git objects from the supplied checkout.
-Historical model evidence above names its actual old revision and is not a claim
-that all intervening runtime changes have been qualified.
+`doublesharp/osor-rs`. Revision `94584f64` is published and is an ancestor of
+upstream main `8380bfd1`; PhotoCraft remains pinned to `94584f64`. Initial offline
+validation seeded the existing Cargo Git cache from the supplied local checkout.
+That cache provenance is separate from fresh remote resolution.
+
+On 2026-10-28, the `94584f64` CLI replayed the retained 704×368 scene on Metal/F32
+against the same independent reference, original mask/noises, managed model bundle
+and frozen tolerances. All 18 stages passed; decoded RGB maximum absolute error was
+0.0006973743438720703 and RMS error was 0.000008269988458171247. No reference or limit
+was changed. The historical application and installer results above retain their
+actual revisions; this bounded CLI replay does not qualify broad image quality,
+model preparation, other platforms or normal application performance.
+
+The `94584f64` retained-bundle Metal/F32 service smoke also passed cold and warm
+101×47 input: finite source-sized RGB/alpha, zero repeat difference, no warm reload
+and retained-output admission. It used existing weights and exercised no download
+or model preparation. These bridge checks remain separate from broad removal
+quality and from the historical native application lifecycle checks.

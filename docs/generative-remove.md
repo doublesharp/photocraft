@@ -78,7 +78,21 @@ The current quick performance gate exited successfully, but marked the shared-ho
 
 New setup strings use English fallback where translations are missing. These checks do not establish Photoshop parity, broad removal quality, signed packaging, or Linux/Windows runtime acceptance. Moebius refinement has no adapter; the prior broad pilot did not justify adding it unconditionally. Prompted Generative Fill/Expand and learned browser execution remain separate work.
 
-The current Cargo package/library is `osor`, pinned to commit `94584f64` in the
-unchanged `doublesharp/osor-rs` Git repository. This advances beyond the historical
-`1b299a1d` qualification above; new-pin checks are recorded separately. The supplied
-rename commit is local and unpushed, so fresh remote consumers need it published.
+The current Cargo package/library is `osor`, pinned to published commit `94584f64`
+in the unchanged `doublesharp/osor-rs` Git repository. Upstream main `8380bfd1`
+contains that commit; PhotoCraft does not advance to the newer main revision.
+Initial offline validation seeded the existing Cargo Git cache from the supplied
+local checkout; that remains historical provenance, separate from remote resolution.
+
+On 2026-10-28, the `94584f64` CLI separately passed all 18 frozen Metal/F32 replay
+stages for the retained 704×368 photo, using the unchanged independent reference,
+mask, noise tensors, managed bundle and tolerances. Decoded RGB maximum absolute
+error was 0.0006973743438720703 and RMS error was 0.000008269988458171247. This is
+bounded numerical evidence, distinct from the historical application lifecycle and
+installer checks above; it makes no broad quality or throughput claim.
+
+The `94584f64` retained-bundle Metal/F32 service smoke also passed cold and warm
+101×47 input: finite source-sized RGB/alpha, zero repeat difference, no warm reload
+and retained-output admission. It used existing weights and exercised no download
+or model preparation. These bridge checks remain separate from broad removal
+quality and from the historical native application lifecycle checks.
