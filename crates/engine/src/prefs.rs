@@ -1093,11 +1093,20 @@ pub struct GenerativeRemove {
     pub enabled: bool,
     pub enabled_models: Vec<String>,
     pub selected_model: String,
+    /// Empty uses the platform default; a custom folder is applied at the next native launch.
+    pub model_directory: String,
 }
 
 impl Default for GenerativeRemove {
     fn default() -> Self {
-        Self { workflow: "custom".into(), setup_complete: false, enabled: false, enabled_models: vec!["lama".into()], selected_model: "lama".into() }
+        Self {
+            workflow: "custom".into(),
+            setup_complete: false,
+            enabled: false,
+            enabled_models: vec!["lama".into()],
+            selected_model: "lama".into(),
+            model_directory: String::new(),
+        }
     }
 }
 

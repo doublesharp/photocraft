@@ -261,6 +261,7 @@ fn prompt_once(app: &mut PhotocraftApp) {
     if app.ui.tool != crate::state::Tool::Remove
         || app.prefs_rt.remove_setup.prompted
         || busy(app)
+        || super::models::model_folder_pending(app)
         || !app.ui.dialogs.is_empty()
         || app.ui.shell.dialog.is_some()
         || !app.session.removal_service().management_available()

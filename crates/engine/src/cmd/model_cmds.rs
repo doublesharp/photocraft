@@ -68,7 +68,7 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
         })
         .collect();
     Ok(json!({"runtimeAvailable":runtime, "managementAvailable":service.management_available() && management_allowed(s),
-        "enabled":preferences.enabled, "workflow":preferences.workflow, "setupComplete":preferences.setup_complete,
+        "modelDirectory":service.model_directory().map(|path| path.to_string_lossy()), "enabled":preferences.enabled, "workflow":preferences.workflow, "setupComplete":preferences.setup_complete,
         "componentIds":workflow_models(&preferences.workflow, &preferences.selected_model), "models":models, "lastExecution":service.last_execution()}))
 }
 
@@ -249,6 +249,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[cfg(unix)]
+    #[test]
+    fn model_folder_status_handles_non_unicode_paths_without_panicking() {
+        use std::os::unix::ffi::OsStringExt;
+        let folder = std::env::temp_dir().join(std::ffi::OsString::from_vec(b"photocraft-models-\xff".to_vec()));
+        let mut session = Session::new();
+        session.set_removal_service(Arc::new(photocraft_ml::RemovalService::new(Some(folder.clone()))));
+        let status = session.execute("ai.models.list", json!({})).unwrap();
+        assert_eq!(status["modelDirectory"], folder.to_string_lossy().as_ref());
+        assert!(!session.has_jobs());
+    }
 
     struct CountingDownloader(AtomicUsize);
     impl photocraft_ml::ModelDownloader for CountingDownloader {

@@ -50,7 +50,7 @@ struct State {
 }
 
 pub(crate) struct NativeService {
-    directory: Option<PathBuf>,
+    pub(super) directory: Option<PathBuf>,
     onnx_backend: Mutex<crate::OnnxBackend>,
     execution: Mutex<Option<crate::ExecutionInfo>>,
     downloader: Mutex<Option<Arc<dyn ModelDownloader>>>,

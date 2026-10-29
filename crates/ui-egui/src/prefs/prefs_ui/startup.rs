@@ -40,6 +40,7 @@ pub fn load(app: &mut PhotocraftApp) {
             }
         }
     }
+    app.prefs_rt.model_directory_at_launch = app.session.prefs().generative_remove.model_directory.clone();
     crate::dock::restore(app);
     crate::brush_picker::restore(app);
     crate::last_brush::restore(app);

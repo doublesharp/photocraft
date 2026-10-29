@@ -220,6 +220,12 @@ pub(super) fn check_value(path: &str, v: &Value) -> std::result::Result<(), Stri
     if path == "generativeRemove.workflow" && !v.as_str().is_some_and(|id| matches!(id, "recommended" | "lama" | "compact" | "classical" | "custom")) {
         return Err("unknown Remove workflow".into());
     }
+    if path == "generativeRemove.modelDirectory" {
+        let directory = v.as_str().ok_or("model folder must be a string")?;
+        if directory.len() > 4096 || directory.contains('\0') || (!directory.is_empty() && !std::path::Path::new(directory).is_absolute()) {
+            return Err("model folder must be empty for the default or an absolute path of at most 4096 bytes".into());
+        }
+    }
     let known_model = |id: &str| photocraft_ml::RemovalService::default().catalog().iter().any(|model| model.id == id);
     if path == "generativeRemove.selectedModel" {
         let id = v.as_str().ok_or("`generativeRemove.selectedModel` must be a model id")?;

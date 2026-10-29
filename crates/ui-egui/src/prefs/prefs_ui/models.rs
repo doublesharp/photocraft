@@ -48,6 +48,10 @@ fn remember_result(f: &mut Map<String, Value>, result: Result<Value, String>) {
             let message = if let Some(job) = result.get("job").and_then(Value::as_u64) {
                 f.insert("job".into(), json!(job));
                 tl!("The model operation continues while this window is closed.")
+            } else if flag(&result, "restartRequired") {
+                tl!("Restart PhotoCraft to use the selected model folder.")
+            } else if flag(&result, "modelFolderPicker") {
+                tl!("Choose a folder containing your installed models.")
             } else if result.get("fileDialog").and_then(Value::as_str) == Some("folder") {
                 tl!("Choose a local model bundle.")
             } else if result.get("fileDialog").is_some() {
@@ -146,6 +150,64 @@ fn import_model(app: &mut PhotocraftApp, id: &str) -> Result<Value, String> {
         }
         result
     })
+}
+
+pub(super) fn model_folder_pending(app: &PhotocraftApp) -> bool {
+    app.session.prefs().generative_remove.model_directory != app.prefs_rt.model_directory_at_launch
+}
+
+fn set_model_folder(app: &mut PhotocraftApp, folder: &str) -> Result<Value, String> {
+    configure(app, vec![("prefs.set", json!({"path":"generativeRemove.modelDirectory","value":folder}))])?;
+    Ok(json!({"restartRequired":model_folder_pending(app)}))
+}
+
+fn choose_model_folder(app: &mut PhotocraftApp) -> Result<Value, String> {
+    // A native folder picker requires an interactive user; remote clients cannot use a
+    // delayed dialog reply to bypass their filesystem preference authorization.
+    if app.automation_input || app.session.authorize.is_some() {
+        return Err(tl!("Choose the model folder locally in PhotoCraft.").into());
+    }
+    let previous = app.session.prefs().generative_remove.model_directory.clone();
+    let initial_dir = app.session.removal_service().model_directory().map(|path| path.to_string_lossy().into_owned());
+    app.ask_file(FileDialogRequest::Folder { initial_dir }, move |app, answer| {
+        if app.session.prefs().generative_remove.model_directory != previous {
+            return Err(tl!("The model folder changed while the picker was open. Choose it again.").into());
+        }
+        match answer {
+            FileDialogAnswer::FolderTo(path) => set_model_folder(app, &path),
+            _ => Err(tl!("Choose a model folder on this computer.").into()),
+        }
+    })?;
+    Ok(json!({"fileDialog":"folder","modelFolderPicker":true}))
+}
+
+fn render_model_folder(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, status: &Value, busy: bool) {
+    if cfg!(target_arch = "wasm32") || app.services.file_dialog.is_none() {
+        return;
+    }
+    ui.separator();
+    ui.label(RichText::new(tl!("Model folder")).strong());
+    let folder = app.session.prefs().generative_remove.model_directory.clone();
+    ui.label(if folder.is_empty() { tl!("Automatic (default folder)") } else { folder.as_str() });
+    if let Some(active) = status.get("modelDirectory").and_then(Value::as_str)
+        && (folder.is_empty() || folder != active)
+    {
+        ui.label(crate::i18n::fmt(tl!("In use: {folder}"), &[("folder", active)]));
+    }
+    ui.horizontal_wrapped(|ui| {
+        if ui.add_enabled(!busy, egui::Button::new(tl!("Choose model folder…"))).clicked() {
+            let result = choose_model_folder(app);
+            remember_result(f, result);
+        }
+        if ui.add_enabled(!busy && !folder.is_empty(), egui::Button::new(tl!("Use default folder"))).clicked() {
+            let result = set_model_folder(app, "");
+            remember_result(f, result);
+        }
+    });
+    if model_folder_pending(app) {
+        ui.label(tl!("Restart PhotoCraft to use the selected model folder."));
+    }
+    ui.label(tl!("Existing model files stay in their current folders. Choose a folder containing your installed models to reuse them."));
 }
 
 pub(super) fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>) {
@@ -569,7 +631,9 @@ fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>
     let top = ui.cursor().top();
     refresh_feedback(app, f, status);
     let models_busy = status.get("models").and_then(Value::as_array).is_some_and(|models| models.iter().any(|model| flag(model, "busy")));
-    let blocked = models_busy || super::remove_setup::busy(app) || app.session.jobs().iter().any(|job| job.command.starts_with("ai.models."));
+    let busy = models_busy || super::remove_setup::busy(app) || app.session.jobs().iter().any(|job| job.command.starts_with("ai.models."));
+    let blocked = busy || model_folder_pending(app);
+    render_model_folder(app, ui, f, status, busy);
     render_summary(app, ui, f, status, blocked);
     render_progress(app, ui, f, models_busy);
     render_feedback(app, ui, f, blocked);
@@ -632,6 +696,56 @@ mod tests {
         assert!(app.session.journal.is_empty());
         super::super::confirm(&mut app, &fields).unwrap();
         assert_eq!(app.session.prefs_value(), before, "closing the manager commits no unrelated draft");
+    }
+
+    #[test]
+    fn model_folder_selection_persists_without_replacing_the_active_runtime() {
+        use std::{cell::RefCell, rc::Rc, sync::Arc};
+        let replies: Rc<RefCell<Vec<crate::file_dialog::FileDialogReply>>> = Default::default();
+        let held = replies.clone();
+        let services = crate::Services {
+            file_dialog: Some(Box::new(move |request, _, reply| {
+                assert!(matches!(request, FileDialogRequest::Folder { .. }));
+                held.borrow_mut().push(reply);
+            })),
+            ..Default::default()
+        };
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+        let active = app.session.removal_service();
+        let folder = std::env::temp_dir().join("existing-ai-models").to_string_lossy().into_owned();
+        let ctx = egui::Context::default();
+        choose_model_folder(&mut app).unwrap();
+        app.poll_file_dialog(&ctx, None);
+        replies.borrow_mut().pop().unwrap().send(None);
+        app.poll_file_dialog(&ctx, None);
+        assert!(app.session.prefs().generative_remove.model_directory.is_empty());
+        assert!(!model_folder_pending(&app));
+        choose_model_folder(&mut app).unwrap();
+        app.poll_file_dialog(&ctx, None);
+        replies.borrow_mut().pop().unwrap().send(Some(FileDialogAnswer::FolderTo(folder.clone())));
+        app.poll_file_dialog(&ctx, None);
+        assert_eq!(app.session.prefs().generative_remove.model_directory, folder);
+        assert!(model_folder_pending(&app));
+        assert!(Arc::ptr_eq(&active, &app.session.removal_service()), "folder changes must not replace a running service");
+        assert!(!app.session.has_jobs(), "choosing a folder must never download models");
+        let saved = app.session.prefs_to_json();
+        let restarted = PhotocraftApp::new(
+            photocraft_engine::Session::new(),
+            crate::Services { load_prefs: Some(Box::new(move || Some(saved.clone()))), ..Default::default() },
+        );
+        assert_eq!(restarted.session.prefs().generative_remove.model_directory, folder);
+        assert!(!model_folder_pending(&restarted));
+        // A delayed picker answer must not overwrite a newer preference.
+        choose_model_folder(&mut app).unwrap();
+        app.poll_file_dialog(&ctx, None);
+        set_model_folder(&mut app, "").unwrap();
+        replies.borrow_mut().pop().unwrap().send(Some(FileDialogAnswer::FolderTo(folder)));
+        app.poll_file_dialog(&ctx, None);
+        assert!(app.session.prefs().generative_remove.model_directory.is_empty());
+        assert!(app.ui.status.contains("changed while the picker was open"));
+        app.automation_input = true;
+        assert!(choose_model_folder(&mut app).is_err());
+        assert!(!app.file_dialog_open());
     }
 
     #[test]

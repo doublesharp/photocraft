@@ -50,10 +50,7 @@ fn load_processing_preferences(session: &mut photocraft_engine::Session, reader:
     Ok(())
 }
 
-/// Explicit local CLI entry points inherit the user's processing choices. Remote automation
-/// deliberately uses `configure` and receives no preference-file read or processing opt-in.
-pub(crate) fn configure(session: &mut photocraft_engine::Session) -> Result<(), String> {
-    crate::model_services::configure(session);
+fn load_local_processing_preferences(session: &mut photocraft_engine::Session) -> Result<(), String> {
     let executable = std::env::current_exe().ok();
     let Some(path) = preferences(|key| std::env::var_os(key), executable.as_deref()) else { return Ok(()) };
     let metadata = match std::fs::metadata(&path) {
@@ -68,9 +65,29 @@ pub(crate) fn configure(session: &mut photocraft_engine::Session) -> Result<(), 
     load_processing_preferences(session, file)
 }
 
+/// Explicit local CLI entry points inherit the user's processing choices and saved model folder.
+/// Remote automation uses model_services::configure without reading these preferences.
+pub(crate) fn configure(session: &mut photocraft_engine::Session) -> Result<(), String> {
+    load_local_processing_preferences(session)?;
+    crate::model_services::configure(session);
+    Ok(())
+}
+
 #[cfg(test)]
 mod preference_tests {
     use super::*;
+    #[test]
+    fn trusted_cli_processing_preferences_restore_the_saved_model_folder() {
+        let folder = std::env::temp_dir().join("photocraft-existing-cli-models");
+        let text = serde_json::json!({"generativeRemove":{"modelDirectory":folder,"enabled":true}}).to_string();
+        let mut session = photocraft_engine::Session::new();
+        load_processing_preferences(&mut session, text.as_bytes()).unwrap();
+        assert_eq!(session.prefs().generative_remove.model_directory, folder.to_string_lossy());
+        crate::model_services::configure(&mut session);
+        let expected = std::env::var_os("PHOTOCRAFT_MODEL_DIR").filter(|path| !path.is_empty()).map(PathBuf::from).unwrap_or(folder);
+        assert_eq!(session.removal_service().model_directory(), Some(expected.as_path()));
+        assert!(!session.has_jobs());
+    }
     #[test]
     fn review_cli_restores_enabled_models_and_memory_without_other_authority() {
         let mut session = photocraft_engine::Session::new();

@@ -663,3 +663,16 @@ fn generative_model_management_requires_explicit_desktop_authority() {
         assert!(authorize_engine_command(id, &serde_json::json!({})).is_ok(), "model capability queries should be readable");
     }
 }
+
+#[test]
+fn remote_model_folder_changes_cannot_grant_ambient_authority_after_restart() {
+    for params in [
+        serde_json::json!({"path":"generativeRemove.modelDirectory","value":"/outside/models"}),
+        serde_json::json!({"path":".generativeRemove..modelDirectory","value":"/outside/models"}),
+        serde_json::json!({"path":"generativeRemove","value":{"modelDirectory":"/outside/models"}}),
+        serde_json::json!({"values":{"generativeRemove.modelDirectory":"/outside/models"}}),
+    ] {
+        assert!(authorize_engine_command("prefs.set", &params).is_err(), "{params}");
+    }
+    assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path":"generativeRemove.selectedModel","value":"lama"})).is_ok());
+}

@@ -26,6 +26,7 @@ use crate::theme::{ThemeKind, Tokens};
 #[derive(Default)]
 pub struct Runtime {
     loaded: bool,
+    model_directory_at_launch: String,
     remove_setup: remove_setup::Runtime,
     /// Preferences revision last written to storage (or loaded from it).
     saved_rev: u64,

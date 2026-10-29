@@ -1038,7 +1038,7 @@ fn a_wrongly_typed_section_or_colour_setting_resets_only_that_part() {
 fn generative_remove_defaults_are_explicitly_opt_in_and_persist() {
     let mut s = Session::new();
     let r = s.execute("prefs.get", json!({"path":"generativeRemove"})).unwrap();
-    assert_eq!(r, json!({"workflow":"custom","setupComplete":false,"enabled":false,"enabledModels":["lama"],"selectedModel":"lama"}));
+    assert_eq!(r, json!({"workflow":"custom","setupComplete":false,"enabled":false,"enabledModels":["lama"],"selectedModel":"lama","modelDirectory":""}));
     s.execute("prefs.set", json!({"path":"generativeRemove.enabled", "value":true})).unwrap();
     let saved = s.prefs_to_json();
     let mut restored = Session::new();
@@ -1065,4 +1065,21 @@ fn remove_setup_preserves_migrated_choices_and_rejects_invalid_changes_atomicall
     assert_eq!(prefs["enabledModels"], json!(["lama", "osor-sdxl"]));
     assert_eq!(prefs["enabled"], true);
     assert!(s.execute("prefs.set", json!({"path":"generativeRemove.workflow","value":"unknown"})).is_err());
+}
+
+#[test]
+fn model_folder_preference_survives_restart_and_validates_atomically() {
+    let mut session = Session::new();
+    let folder = std::env::temp_dir().join("photocraft-saved-models").to_string_lossy().into_owned();
+    session.execute("prefs.set", json!({"path":"generativeRemove.modelDirectory","value":folder})).expect("save model folder");
+    let saved = session.prefs_to_json();
+    let mut restarted = Session::new();
+    assert!(restarted.load_prefs_json(&saved).unwrap().is_empty());
+    assert_eq!(restarted.execute("prefs.get", json!({"path":"generativeRemove.modelDirectory"})).unwrap(), folder);
+    for bad in [json!("relative/models"), json!("bad\0folder"), json!("x".repeat(4097)), json!(42), Value::Null] {
+        assert!(restarted.execute("prefs.set", json!({"path":"generativeRemove.modelDirectory","value":bad})).is_err());
+        assert_eq!(restarted.prefs_to_json(), saved, "an invalid folder must preserve existing preferences");
+    }
+    restarted.execute("prefs.set", json!({"path":"generativeRemove.modelDirectory","value":""})).unwrap();
+    assert_eq!(restarted.execute("prefs.get", json!({"path":"generativeRemove.modelDirectory"})).unwrap(), "");
 }

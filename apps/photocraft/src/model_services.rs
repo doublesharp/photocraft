@@ -12,13 +12,13 @@ mod directories;
 
 /// Optional model data is local to this machine, separate from roaming preferences.
 /// PHOTOCRAFT_MODEL_DIR explicitly moves it (including to Scratch for development).
-pub fn model_dir() -> Option<PathBuf> {
+pub fn model_dir(saved: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok();
-    directories::resolve(|k| std::env::var_os(k), exe.as_deref(), directories::Platform::current())
+    directories::resolve(|k| std::env::var_os(k), exe.as_deref(), directories::Platform::current(), (!saved.is_empty()).then(|| std::path::Path::new(saved)))
 }
 
 pub fn configure(session: &mut photocraft_engine::Session) {
-    let service = RemovalService::new(model_dir()).with_downloader(Arc::new(HttpsModels::new()));
+    let service = RemovalService::new(model_dir(&session.prefs().generative_remove.model_directory)).with_downloader(Arc::new(HttpsModels::new()));
     #[cfg(all(feature = "osor", target_os = "macos"))]
     let service = service.with_osor_backend(photocraft_ml::OsorBackend::Metal { ordinal: 0 });
     session.set_removal_service(Arc::new(service));
@@ -91,6 +91,19 @@ impl HttpsModels {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn model_service_reuses_the_saved_folder_after_preferences_are_loaded() {
+        let folder = std::env::temp_dir().join("photocraft-existing-model-store");
+        let text = serde_json::json!({"generativeRemove":{"modelDirectory":folder}}).to_string();
+        let mut session = photocraft_engine::Session::new();
+        assert!(session.load_prefs_json(&text).unwrap().is_empty());
+        configure(&mut session);
+        let expected = std::env::var_os("PHOTOCRAFT_MODEL_DIR").filter(|path| !path.is_empty()).map(PathBuf::from).unwrap_or(folder);
+        assert_eq!(session.removal_service().model_directory(), Some(expected.as_path()));
+        let status = session.execute("ai.models.list", serde_json::json!({})).unwrap();
+        assert_eq!(status["modelDirectory"], serde_json::json!(expected));
+        assert!(!session.has_jobs());
+    }
     #[test]
     fn model_transport_is_https_only_with_bounded_timeouts() {
         let client = HttpsModels::new();

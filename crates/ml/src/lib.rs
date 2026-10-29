@@ -320,6 +320,18 @@ impl RemovalService {
         }
     }
 
+    /// The active native model store, resolved by the host. This does not touch the filesystem.
+    pub fn model_directory(&self) -> Option<&Path> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.native.directory.as_deref()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+    }
+
     pub fn with_downloader(self, downloader: Arc<dyn ModelDownloader>) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         self.native.set_downloader(downloader);
