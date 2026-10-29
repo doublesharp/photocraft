@@ -54,9 +54,7 @@ pub(crate) fn apply_candidate(s: &mut Session, capture: Capture, candidate: Cand
         *active = candidate.active_layer;
         Ok(())
     })?;
-    if let Some(st) = s.active_mut() {
-        st.last_damage = Some(candidate.crop);
-    }
+    s.hint_damage(candidate.crop);
     Ok(candidate.result.clone())
 }
 impl Session {

@@ -164,9 +164,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         *active = candidate.active_layer;
         Ok(())
     })?;
-    if let Some(st) = s.active_mut() {
-        st.last_damage = Some(candidate.crop);
-    }
+    s.hint_damage(candidate.crop);
     let mut result = candidate.result.clone();
     result["applied"] = json!(true);
     // Dispatch records the accepted result as paint.remove, never a transient preview id.

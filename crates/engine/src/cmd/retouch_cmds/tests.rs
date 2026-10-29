@@ -3806,3 +3806,68 @@ fn regional_remove_replay_rejects_a_changed_workflow_before_inference() {
         assert!(backend.0.lock().unwrap().is_empty());
     }
 }
+
+fn assert_preview_damage_is_bounded(smart_fill: bool) {
+    let _guard = lock_ai_tests();
+    let mut s = session(600, 400, 8, "rgb");
+    paint_layer(&mut s, |_, _| [1.0; 4]);
+    enable_solid_removal(&mut s);
+    let before = s.active().unwrap().doc.clone();
+    let active = s.active().unwrap().active_layer;
+    let mut candidate = (*before).clone();
+    candidate.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(300, 100, 310, 110), &[0.5, 0.5, 0.5, 1.0]);
+    let crop = before.bounds();
+    let expected = crate::layer_multi_cmds::step_damage(&before, &candidate).unwrap().intersect(&crop);
+    assert!(!expected.is_empty() && expected != crop, "one changed tile must be smaller than the source context");
+    let reservation = s.removal_service().admit("lama", 0, u64::MAX).unwrap().into_reservation();
+    let candidate = std::sync::Arc::new(candidate);
+    if smart_fill {
+        let capture = crate::smart_fill_preview::Capture::new(&mut s).unwrap();
+        crate::smart_fill_preview::publish(
+            &mut s,
+            capture,
+            crate::smart_fill_preview::Candidate {
+                doc: candidate,
+                active_layer: active,
+                crop,
+                params: json!({"method":"ai","output":"current"}),
+                result: json!({}),
+                _reservation: reservation,
+            },
+        )
+        .unwrap();
+        s.execute("fill.preview.apply", json!({})).unwrap();
+    } else {
+        let capture = crate::removal_preview::Capture::new(&s).unwrap();
+        crate::removal_preview::publish(
+            &mut s,
+            capture,
+            crate::removal_preview::Candidate {
+                doc: candidate,
+                active_layer: active,
+                crop,
+                params: json!({"method":"ai","points":[[305,105]],"size":10}),
+                result: json!({}),
+                _content: Box::new(reservation),
+            },
+        )
+        .unwrap();
+        s.execute("remove.preview.apply", json!({})).unwrap();
+    }
+    let state = s.active().unwrap();
+    assert_eq!(state.last_damage, Some(expected), "Apply must retain authoritative damage bounds");
+    assert_eq!(s.damage_misses, 0);
+    let a = photocraft_compose::render(&before, crop);
+    let b = photocraft_compose::render(&state.doc, crop);
+    assert!(a.px.iter().zip(&b.px).enumerate().all(|(i, (a, b))| a == b || expected.contains((i % 600) as i32, (i / 600) as i32)));
+    assert!(s.undo());
+    assert_eq!(s.active().unwrap().doc, before);
+}
+#[test]
+fn smart_fill_preview_damage_is_bounded_by_changed_tiles() {
+    assert_preview_damage_is_bounded(true);
+}
+#[test]
+fn removal_preview_damage_is_bounded_by_changed_tiles() {
+    assert_preview_damage_is_bounded(false);
+}
