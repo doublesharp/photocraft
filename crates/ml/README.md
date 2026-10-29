@@ -8,6 +8,33 @@ A writable model directory is not a security boundary against an actively hostil
 
 The process-wide permit admits at most one active operation. The warm cache retains at most one ONNX plan and one OSOR model together when their catalog working-set estimates fit the captured memory budget after subtracting all admitted transient buffers. A single background worker releases both after five idle minutes. The idle interval starts again when the operation or retained-preview reservation releases admission; the worker cannot evict models while that ownership is held. Insufficient headroom evicts a companion before loading the requested model. A failed cleanup-thread start evicts idle models or retries after the active owner releases. Model bytes are rehashed before each inference, even when a compiled plan is warm, because file metadata can be restored after a rewrite. Cold loads parse the same bounded byte snapshot that was hashed, with a transient allocation up to the catalog artifact size. Cancellation cannot interrupt a tract forward; admission stays held until the worker returns. The engine also retains it while an output waits to be applied or discarded. Model installation calls `RemovalControl::begin_irreversible` immediately before no-clobber publication and ignores cancellation after that point. Hosts with asynchronous cancellation must override the default hook with an atomic gate that rejects new cancellation once commit begins; the engine `JobCtx` connects this hook to its commit gate. The crop has a 16,777,216-pixel input limit.
 
+## Native ONNX compute
+
+ONNX inference defaults to `OnnxBackend::Auto`: prefer Metal for LaMa on macOS when the
+pinned graph has supported GPU operations and its working set fits the captured
+budget. Unsupported operations can remain on CPU within the same graph. Other
+native platforms use CPU. MI-GAN Auto remains on CPU pending separate GPU
+qualification. GPU initialization, lowering or drained-forward failure
+falls back to the **same model** on CPU; cancellation never starts a retry.
+`with_onnx_backend(OnnxBackend::Cpu)` forces CPU, while `Metal` requires GPU support
+and reports an error for qualification rather than hiding a fallback.
+
+`last_execution()` reports only a completed result: runtime/device, actual prepared
+graph placement where available, and a CPU fallback reason. `ai.models.list` exposes
+it as `lastExecution`; Models shows GPU, mixed CPU/GPU or CPU processing for the last
+run. Node counts describe placement, not percentages of work or elapsed time.
+OSOR diagnostics use its actual compute adapter and returned tensor devices.
+
+The ONNX cache distinguishes backend requests and fingerprints. The catalog
+estimate plus the prepared Metal arena must fit budget minus transients; a warm
+companion is evicted before allocating that arena. Tight budgets use CPU, and a
+later allowance large enough for the arena retries GPU preparation. Other CPU
+fallback plans remain warm until eviction, backend change or five idle minutes.
+Every model read still verifies its pinned hash. GPU synchronization finishes
+before cancellation releases ownership, output decoding or a CPU retry. The Metal
+context's kernel cache is separate from retained model weights. Wasm has no native
+inference dependency or learned GPU execution.
+
 ## Early resource admission API
 
 `RemovalService::admit(&self, model_id: &str, transient_bytes: u64, budget_bytes: u64) -> Result<RemovalPermit<'_>>` checks the catalog model's `memory_mib` working-set estimate (MiB × 1,048,576) plus the caller's conservative bound for all overlapping transient buffers with checked arithmetic against the frozen byte budget. An overflow or excess returns an error before the caller allocates those buffers; an already-active process-wide operation returns `Error::Busy`. The estimate is an admission policy, not an operating-system-enforced allocation cap. An incompatible ONNX plan is evicted before admission returns. OSOR and an ONNX companion can remain resident only within the same frozen budget; each inference rechecks the estimates before loading.
@@ -100,6 +127,14 @@ These are cache-lifecycle checks, not image-quality or throughput comparisons.
 
 The ignored `real_models_match_reference_and_reuse_one_warm_family` test requires `PHOTOCRAFT_ML_LAMA`, `PHOTOCRAFT_ML_MIGAN` and `PHOTOCRAFT_ML_ORACLE_DIR`. The oracle directory supplies a 512×512 interleaved RGB byte image (`image.rgb`), a 512×512 binary white-is-hole mask (`mask.bin`), and interleaved RGB byte outputs from an independent reference (`lama.rgb`, `migan.rgb`). Both artifacts are imported and verified by their catalog hashes. The test compares decoded samples within one byte value and checks cold/warm loads. Fixtures and test adapters do not qualify a model or platform; these comparisons cover only the supplied scene.
 
+The ignored `real_onnx_cpu_metal_outputs_timings_and_drain` and
+`real_lama_gpu_budget_falls_back_and_recovers` checks use the same explicit model
+and oracle paths on macOS. They preserve the existing one-code-value output gate,
+compare matched LaMa CPU/GPU runs, collect GPU timestamps separately from normal timing,
+and exercise backend switching, cancellation, budget recovery and warm-file hash
+rejection. They require a caller-owned model execution window; ordinary tests do
+not load weights.
+
 ## OSOR-SDXL Phase II bridge
 
 The `osor-sdxl` catalog entry is always discoverable. Native `osor` enables the
@@ -110,7 +145,7 @@ The library is pinned to [osor v0.2.0, revision 94584f64f2a94cb6228239d45bf0ebb4
 using Candle 0.11.0. Updating it requires renewing the affected loading, conversion
 and inference checks.
 The desktop application's native setup selects Metal on macOS and CPU elsewhere;
-the bare library service defaults to CPU/F32. Applications
+the bare library service defaults to CPU/F32 for OSOR. Applications
 can explicitly construct `RemovalService::new(directory).with_osor_backend(OsorBackend::Metal { ordinal: 0 })`;
 ML and engine code never read an environment variable to choose a backend. Unsupported
 backend selections report unavailable. `model_runtime_available(id)` reports support
@@ -201,3 +236,16 @@ The `94584f64` retained-bundle Metal/F32 service smoke also passed cold and warm
 and retained-output admission. It used existing weights and exercised no download
 or model preparation. These bridge checks remain separate from broad removal
 quality and from the historical native application lifecycle checks.
+
+## LaMa Metal qualification, 2026-10-29
+
+On this macOS host, the retained 512×512 independent oracle scene passed the
+unchanged one-code-value gate for CPU, Metal and their direct comparison. The
+prepared LaMa graph placed 2,305 computational nodes on GPU and 308 on CPU, with
+235 transfers and a 153,190,400-byte GPU arena. A separate warm profile recorded
+2,415 GPU timestamp dispatches with positive aggregate device time; node counts
+are not work percentages. Cold/warm execution, backend changes, retained-output ownership and
+cancellation/drain followed by a successful warm fill passed. Matched timings
+remain shared-host diagnostics; this is one-scene numerical evidence, not broad
+removal-quality or performance acceptance. MI-GAN Auto remains CPU-only pending
+separate GPU qualification. Scratch receipts retain all samples and hashes.

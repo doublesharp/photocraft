@@ -58,7 +58,12 @@ fn load(reference: &Reference, backend: OsorBackend) -> Result<(Cached, f64)> {
     Ok((Cached { identity, backend: backend_key, model }, start.elapsed().as_secs_f64() * 1000.))
 }
 
-pub(crate) fn infer(reference: &Reference, backend: OsorBackend, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
+pub(crate) fn infer(
+    reference: &Reference,
+    backend: OsorBackend,
+    input: &RemovalInput,
+    ctl: &dyn RemovalControl,
+) -> Result<(RemovalOutput, crate::ExecutionInfo)> {
     check(ctl)?;
     ctl.progress(0.08, "Loading local OSOR model");
     let (cached, load_ms) = load(reference, backend)?;
@@ -68,10 +73,10 @@ pub(crate) fn infer(reference: &Reference, backend: OsorBackend, input: &Removal
     let drained = cached.model.device().synchronize().map_err(|e| Error::Inference(e.to_string()));
     crate::cache::put_osor(cached);
     drained?;
-    let mut output = result?;
+    let (mut output, info) = result?;
     output.load_ms = load_ms;
     check(ctl)?;
-    Ok(output)
+    Ok((output, info))
 }
 
 struct CancelMonitorCompletion<'a> {
@@ -111,7 +116,7 @@ fn with_cancellation<T>(ctl: &dyn RemovalControl, run: impl FnOnce(&osor::Cancel
     })
 }
 
-fn forward(model: &Osor, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
+fn forward(model: &Osor, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<(RemovalOutput, crate::ExecutionInfo)> {
     check(ctl)?;
     let geometry = Geometry::osor(input.width, input.height)?;
     let (rgb, mask) = geometry.prepare(input)?;
@@ -148,15 +153,27 @@ fn forward(model: &Osor, input: &RemovalInput, ctl: &dyn RemovalControl) -> Resu
     if result.image.dims() != [1, 3, geometry.rows, geometry.side] || result.alpha.dims() != [1, 1, geometry.rows, geometry.side] {
         return Err(Error::Inference("OSOR returned unexpected RGB or edit-alpha dimensions".into()));
     }
+    let info = crate::ExecutionInfo {
+        model_id: "osor-sdxl".into(),
+        runtime: "OSOR Candle".into(),
+        device: format!("{}; RGB {:?}; alpha {:?}", model.compute_device_description(), result.image.device().location(), result.alpha.device().location()),
+        uses_gpu: (result.image.device().is_metal() || result.image.device().is_cuda())
+            && (result.alpha.device().is_metal() || result.alpha.device().is_cuda()),
+        graph: None,
+        fallback_reason: None,
+    };
     let rgb = result.image.flatten_all().and_then(|t| t.to_vec1::<f32>()).map_err(|e| Error::Inference(e.to_string()))?;
     let alpha = result.alpha.flatten_all().and_then(|t| t.to_vec1::<f32>()).map_err(|e| Error::Inference(e.to_string()))?;
-    Ok(RemovalOutput {
-        rgb: geometry.restore(&rgb)?,
-        edit_alpha: Some(geometry.restore_alpha(&alpha)?),
-        inference_scale: geometry.scale,
-        load_ms: 0.,
-        forward_ms,
-    })
+    Ok((
+        RemovalOutput {
+            rgb: geometry.restore(&rgb)?,
+            edit_alpha: Some(geometry.restore_alpha(&alpha)?),
+            inference_scale: geometry.scale,
+            load_ms: 0.,
+            forward_ms,
+        },
+        info,
+    ))
 }
 
 fn noise(count: usize, mut state: u64) -> Vec<f32> {

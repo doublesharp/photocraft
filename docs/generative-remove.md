@@ -56,9 +56,9 @@ The service rehashes model files before inference, including warm runs. It admit
 
 Models use machine-local app data: Application Support on macOS, LOCALAPPDATA on Windows, and XDG_DATA_HOME (or `~/.local/share`) on Linux. `PHOTOCRAFT_CONFIG_DIR` keeps models beneath that override. Portable mode uses `PhotoCraftData/models` beside the executable and does not redirect an unwritable model directory. `PHOTOCRAFT_MODEL_DIR` explicitly selects a different real directory, including Scratch for development.
 
-Default desktop and CLI builds enable `local-ai` and `osor`. OSOR uses Metal/F32 on macOS and CPU/F32 on other native targets. `--no-default-features` omits learned backends; `--features local-ai` selects the smaller ONNX-only runtime. `photocraft-ml` itself has no default inference feature. Builds and ordinary tests require no model files and never download them. Follow Scratch output rules in `AGENTS.md`.
+Default desktop and CLI builds enable `local-ai` and `osor`. LaMa prefers supported Metal operations on macOS, with the same model on CPU when GPU preparation or its memory requirement is unavailable. Some graphs combine GPU and CPU operations. MI-GAN remains on CPU pending separate GPU qualification. OSOR uses Metal/F32 on macOS and CPU/F32 on other native targets. `--no-default-features` omits learned backends; `--features local-ai` selects the smaller ONNX-only runtime. `photocraft-ml` itself has no default inference feature. Builds and ordinary tests require no model files and never download them. Follow Scratch output rules in `AGENTS.md`.
 
-Trusted local CLI run/batch/droplet entry points restore saved removal choices and memory budget. Remote automation receives no implicit file-read or processing opt-in. Engine clients use `remove.setup {workflow,memoryUsageMb?}` to configure only, followed by explicit `ai.models.install {modelId}` commands for downloads. `remove.capabilities` and `ai.models.list` expose the selected workflow, components, preparation estimates, license links and readiness.
+Trusted local CLI run/batch/droplet entry points restore saved removal choices and memory budget. Remote automation receives no implicit file-read or processing opt-in. Engine clients use `remove.setup {workflow,memoryUsageMb?}` to configure only, followed by explicit `ai.models.install {modelId}` commands for downloads. `remove.capabilities` and `ai.models.list` expose the selected workflow, components, preparation estimates, license links and readiness. `ai.models.list.lastExecution` separately reports the completed runtime/device, graph placement when available, and CPU fallback reason. Models shows the last run as GPU, mixed GPU/CPU, or CPU; compiled support alone does not establish GPU execution.
 
 `paint.remove` accepts `method:classical|auto|ai`, optional `modelId`, and `repairType:auto|detail|object` globally or per stroke. Recommended Auto always creates a preview. Explicit `removeEffects:true` requires review. Use `remove.preview.status {}`, then `remove.preview.apply {id?}` or `remove.preview.discard {id?}`; supplying the returned ID binds the action to that exact candidate. Results retain the regional plan and model revisions. Untrusted automation and action/script playback cannot administer models or apply unreviewed hybrid/effects repairs.
 
@@ -96,3 +96,10 @@ The `94584f64` retained-bundle Metal/F32 service smoke also passed cold and warm
 and retained-output admission. It used existing weights and exercised no download
 or model preparation. These bridge checks remain separate from broad removal
 quality and from the historical native application lifecycle checks.
+
+LaMa's 2026-10-29 Metal check passed the retained 512×512 oracle and direct CPU
+comparison within the unchanged one-byte threshold. Its graph mixes GPU and CPU
+operations; warm hardware timestamps confirmed GPU dispatch. Cache switching,
+retained-output ownership and cancellation/drain passed. Timings are shared-host
+diagnostics, and this scene does not establish broad quality or a performance
+budget. MI-GAN remains on CPU pending separate GPU qualification.

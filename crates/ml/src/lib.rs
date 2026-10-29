@@ -11,6 +11,8 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 mod cache;
 mod catalog;
+mod execution;
+pub use execution::{ExecutionInfo, GraphPlacement, OnnxBackend};
 #[cfg(all(not(target_arch = "wasm32"), feature = "osor"))]
 mod osor_runtime;
 #[cfg(any(test, all(not(target_arch = "wasm32"), any(feature = "native-inference", feature = "osor"))))]
@@ -216,7 +218,10 @@ impl RemovalPermit<'_> {
 impl RemovalService {
     fn infer_admitted(&self, model: &'static ModelSpec, input: &RemovalInput, ctl: &dyn RemovalControl, available_bytes: u64) -> Result<RemovalOutput> {
         #[cfg(not(target_arch = "wasm32"))]
-        self.native.prepare_model(model.id, self.backend.is_some(), available_bytes);
+        {
+            self.native.prepare_model(model.id, self.backend.is_some(), available_bytes);
+            self.native.clear_execution();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(backend) = &self.backend {
             return self.native.infer_backend(backend.as_ref(), model.id, input, ctl);
@@ -227,7 +232,7 @@ impl RemovalService {
         }
         #[cfg(all(not(target_arch = "wasm32"), feature = "native-inference"))]
         {
-            self.native.infer(model, input, ctl)
+            self.native.infer(model, input, ctl, available_bytes)
         }
         #[cfg(not(all(not(target_arch = "wasm32"), feature = "native-inference")))]
         {
@@ -342,6 +347,27 @@ impl RemovalService {
     pub fn with_osor_backend(self, backend: OsorBackend) -> Self {
         self.native.set_osor_backend(backend);
         self
+    }
+
+    /// Prefer the native GPU when supported; Auto falls back to the same model on CPU.
+    pub fn with_onnx_backend(self, backend: OnnxBackend) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.native.set_onnx_backend(backend);
+        #[cfg(target_arch = "wasm32")]
+        let _ = backend;
+        self
+    }
+
+    /// The last successfully completed inference, separate from build capabilities.
+    pub fn last_execution(&self) -> Option<ExecutionInfo> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.native.last_execution()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
     }
 
     /// Whether this build supports the selected adapter (separate from installation).

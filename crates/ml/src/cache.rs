@@ -173,6 +173,12 @@ mod enabled {
         CACHE.changed.notify_all();
     }
 
+    #[cfg(feature = "native-inference")]
+    pub(crate) fn prepare_required(id: &str, required: u64, available_bytes: u64) {
+        CACHE.lock().prepare(id, required, false, available_bytes);
+        CACHE.changed.notify_all();
+    }
+
     pub(crate) fn admit(injected: bool, available_bytes: u64) {
         CACHE.lock().admit(injected, available_bytes);
         CACHE.changed.notify_all();
@@ -200,7 +206,7 @@ mod enabled {
     pub(crate) fn put_onnx(value: crate::runtime::Cached) {
         let mut state = CACHE.lock();
         state.idle_since = None;
-        state.onnx = Some(Resident { id: value.model_id, bytes: estimate(value.model_id), value });
+        state.onnx = Some(Resident { id: value.model_id, bytes: value.working_bytes, value });
     }
 
     #[cfg(feature = "osor")]
@@ -255,6 +261,21 @@ mod enabled {
             cached.prepare("migan-v1", 2, false, 42);
             assert!(cached.onnx.is_none(), "a different ONNX plan must be released before loading");
             assert!(cached.osor.is_some());
+        }
+
+        #[test]
+        fn gpu_arena_is_reserved_before_a_forward_and_counted_on_admission() {
+            let mut cached = state();
+            // The active plan is outside the cache while its exact arena is sized.
+            cached.onnx = None;
+            cached.prepare("lama", 5, false, 45);
+            assert!(cached.osor.is_some());
+            cached.prepare("lama", 5, false, 44);
+            assert!(cached.osor.is_none(), "the extra GPU arena must evict the companion before allocation");
+            let mut cached = state();
+            cached.onnx.as_mut().unwrap().bytes = 5;
+            cached.admit(false, 44);
+            assert!(cached.onnx.is_none() && cached.osor.is_some(), "admission must count retained GPU memory");
         }
 
         #[test]

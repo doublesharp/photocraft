@@ -1083,13 +1083,15 @@ fn real_osor_service_smoke_restores_rgb_alpha_and_reuses_warm_family() {
     let reservation = warm_permit.into_reservation();
     validate_output(&input, &warm).unwrap();
     assert_eq!(warm.load_ms, 0.);
+    let actual = service.last_execution().expect("completed OSOR device telemetry");
+    assert!(actual.uses_gpu && actual.device.contains("Metal"), "actual output tensor devices must be Metal: {actual:?}");
     let rgb_max_difference = reference_rgb.iter().zip(&warm.rgb).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
     let alpha_max_difference = reference_alpha.iter().zip(warm.edit_alpha.as_ref().unwrap()).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
     assert!(rgb_max_difference <= 0.00001 && alpha_max_difference <= 0.00001, "explicit noise must reproduce the warm output");
     println!(
         "{}",
         serde_json::json!({
-            "kind": "photocraft-ml OSOR service smoke", "backend": "Metal F32", "modelSha256": identity,
+            "kind": "photocraft-ml OSOR service smoke", "execution": service.last_execution(), "modelSha256": identity,
             "sourceWidth": width, "sourceHeight": height, "modelWidth": 104, "modelHeight": 48,
             "coldLoadMs": cold_load_ms, "coldForwardMs": cold_forward_ms, "warmLoadMs": warm.load_ms, "warmForwardMs": warm.forward_ms,
             "rgbSamples": warm.rgb.len(), "alphaSamples": warm.edit_alpha.as_ref().unwrap().len(), "inferenceScale": warm.inference_scale,
@@ -1592,3 +1594,56 @@ fn real_osor_installer_converts_pinned_local_streams_into_managed_bundle() {
         serde_json::json!({"model":"osor-sdxl","input_transport":"explicit pinned local file streams","managed_bundle":bundle,"manifest_sha256":service.model_sha256("osor-sdxl").unwrap(),"preparation_seconds":start.elapsed().as_secs_f64()})
     );
 }
+
+#[cfg(all(feature = "native-inference", target_os = "macos"))]
+#[test]
+#[ignore = "requires explicitly supplied pinned LaMa weights and an unowned real-model memory window"]
+fn real_lama_auto_executes_metal() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let source = PathBuf::from(std::env::var_os("PHOTOCRAFT_ML_LAMA").expect("supply the existing pinned LaMa weights"));
+    let temp = tempfile::tempdir().unwrap();
+    let service = RemovalService::new(Some(temp.path().join("models")));
+    service.import("lama", &source, &NoopControl).unwrap();
+    let mut input = RemovalInput { width: 33, height: 33, rgb: vec![0.5; 33 * 33 * 3], mask: vec![0.; 33 * 33] };
+    input.mask[16 * 33 + 16] = 1.;
+    let transient = input.minimum_buffer_bytes_for("lama").unwrap();
+    let mut permit = service.admit("lama", transient, 8 * 1024 * 1024 * 1024).unwrap();
+    let output = permit.infer(&input, &NoopControl).unwrap();
+    validate_output(&input, &output).unwrap();
+    let execution = service.last_execution().unwrap();
+    println!("{}", serde_json::json!({"execution":execution,"loadMs":output.load_ms,"forwardMs":output.forward_ms}));
+    assert!(
+        execution.uses_gpu && execution.graph.as_ref().is_some_and(|graph| graph.gpu_nodes > 0),
+        "Auto must execute supported LaMa nodes on Metal: {execution:?}"
+    );
+}
+
+#[test]
+fn failed_inference_does_not_report_a_previous_gpu_completion() {
+    struct Failed;
+    impl RemovalBackend for Failed {
+        fn ready(&self, _: &str) -> bool {
+            true
+        }
+        fn infer(&self, _: &str, _: &RemovalInput, _: &dyn RemovalControl) -> Result<RemovalOutput> {
+            Err(Error::Inference("test failure".into()))
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let service = RemovalService::default().with_backend(Arc::new(Failed));
+    *service.native.execution.lock().unwrap() = Some(crate::ExecutionInfo {
+        model_id: "lama".into(),
+        runtime: "previous runtime".into(),
+        device: "previous GPU".into(),
+        uses_gpu: true,
+        graph: None,
+        fallback_reason: None,
+    });
+    let input = RemovalInput { width: 2, height: 1, rgb: vec![0.5; 6], mask: vec![0., 1.] };
+    assert!(matches!(service.infer("lama", &input, &NoopControl), Err(Error::Inference(_))));
+    assert!(service.last_execution().is_none(), "a failed attempt must not label an older run as its backend");
+}
+
+#[cfg(all(feature = "native-inference", target_os = "macos"))]
+#[path = "metal_qualification.rs"]
+mod metal_qualification;

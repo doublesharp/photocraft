@@ -51,6 +51,8 @@ struct State {
 
 pub(crate) struct NativeService {
     directory: Option<PathBuf>,
+    onnx_backend: Mutex<crate::OnnxBackend>,
+    execution: Mutex<Option<crate::ExecutionInfo>>,
     downloader: Mutex<Option<Arc<dyn ModelDownloader>>>,
     state: Mutex<State>,
     #[cfg(feature = "osor")]
@@ -77,6 +79,8 @@ impl NativeService {
     pub fn new(directory: Option<PathBuf>) -> Self {
         Self {
             directory,
+            onnx_backend: Mutex::new(crate::OnnxBackend::Auto),
+            execution: Mutex::new(None),
             downloader: Mutex::new(None),
             state: Mutex::new(State::default()),
             #[cfg(feature = "osor")]
@@ -86,6 +90,18 @@ impl NativeService {
             #[cfg(feature = "osor")]
             osor_invalid: Mutex::new(None),
         }
+    }
+
+    pub fn set_onnx_backend(&self, backend: crate::OnnxBackend) {
+        *self.onnx_backend.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = backend;
+    }
+
+    pub fn clear_execution(&self) {
+        *self.execution.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    pub fn last_execution(&self) -> Option<crate::ExecutionInfo> {
+        self.execution.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -135,9 +151,10 @@ impl NativeService {
             }
         };
         let backend = *self.osor_backend.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let out = crate::osor_runtime::infer(&reference.reference, backend, input, ctl)?;
+        let (out, info) = crate::osor_runtime::infer(&reference.reference, backend, input, ctl)?;
         check(ctl)?;
         validate_output(input, &out)?;
+        *self.execution.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(info);
         Ok(out)
     }
 
@@ -430,23 +447,49 @@ impl NativeService {
         let out = backend.infer(id, input, ctl)?;
         check(ctl)?;
         validate_output(input, &out)?;
+        // Injected adapters do not expose a verified device contract. Leave execution
+        // unknown rather than classifying an arbitrary backend as CPU or GPU.
         Ok(out)
     }
 
     #[cfg(feature = "native-inference")]
-    pub fn infer(&self, model: &'static ModelSpec, input: &RemovalInput, ctl: &dyn RemovalControl) -> Result<RemovalOutput> {
+    pub fn infer(&self, model: &'static ModelSpec, input: &RemovalInput, ctl: &dyn RemovalControl, available_bytes: u64) -> Result<RemovalOutput> {
         check(ctl)?;
+        let backend = *self.onnx_backend.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (file, fingerprint) = self.verify_open(model, ctl)?;
-        let cached = crate::cache::take_onnx();
-        // Budgeted preparation evicts any incompatible plan before loading. The busy
-        // lease outlives the forward and keeps the idle reaper away from active resources.
-        let (cached, load_ms) = crate::runtime::load(model, file, fingerprint, cached, ctl)?;
-        let result = crate::runtime::infer(model, &cached, input, ctl);
-        crate::cache::put_onnx(cached);
-        let mut out = result?;
+        let old = crate::cache::take_onnx();
+        let request = crate::runtime::Request { backend, available_bytes, fallback: None };
+        // The lease outlives preparation, forward, synchronization and retained output.
+        let (mut cached, mut load_ms) = crate::runtime::load(model, file, fingerprint, old, request, ctl)?;
+        crate::cache::prepare_required(model.id, cached.working_bytes, available_bytes);
+        let mut forward = crate::runtime::forward(model, &cached, input, ctl);
+        if cached.info.uses_gpu
+            && backend == crate::OnnxBackend::Auto
+            && forward.drained
+            && let Err(error) = &forward.result
+            && !matches!(error, Error::Cancelled)
+        {
+            let reason = format!("Metal forward failed; using the same model on CPU: {error}");
+            drop(cached);
+            check(ctl)?;
+            let (file, fingerprint) = self.verify_open(model, ctl)?;
+            let request = crate::runtime::Request { backend, available_bytes, fallback: Some(reason) };
+            let (cpu, cpu_load_ms) = crate::runtime::load(model, file, fingerprint, None, request, ctl)?;
+            cached = cpu;
+            load_ms += cpu_load_ms;
+            crate::cache::prepare_required(model.id, cached.working_bytes, available_bytes);
+            forward = crate::runtime::forward(model, &cached, input, ctl);
+        }
+        let info = cached.info.clone();
+        // A failed synchronization is never retained as a usable warm plan.
+        if forward.drained {
+            crate::cache::put_onnx(cached);
+        }
+        let mut out = forward.result?;
         out.load_ms = load_ms;
         check(ctl)?;
         validate_output(input, &out)?;
+        *self.execution.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(info);
         Ok(out)
     }
 }

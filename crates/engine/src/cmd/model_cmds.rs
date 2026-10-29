@@ -69,7 +69,7 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
         .collect();
     Ok(json!({"runtimeAvailable":runtime, "managementAvailable":service.management_available() && management_allowed(s),
         "enabled":preferences.enabled, "workflow":preferences.workflow, "setupComplete":preferences.setup_complete,
-        "componentIds":workflow_models(&preferences.workflow, &preferences.selected_model), "models":models}))
+        "componentIds":workflow_models(&preferences.workflow, &preferences.selected_model), "models":models, "lastExecution":service.last_execution()}))
 }
 
 pub(crate) fn workflow_models<'a>(workflow: &str, custom: &'a str) -> Vec<&'a str> {

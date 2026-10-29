@@ -545,6 +545,26 @@ fn render_advanced(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
     }
 }
 
+fn render_execution(ui: &mut egui::Ui, status: &Value) {
+    let Some(info) = status.get("lastExecution").filter(|value| value.is_object()) else { return };
+    let id = text(info, "modelId");
+    let model = model(status, id).map(|entry| text(entry, "label")).unwrap_or(id);
+    let template = if flag(info, "usesGpu") {
+        if info.get("graph").and_then(|graph| graph.get("cpuNodes")).and_then(Value::as_u64).is_some_and(|count| count > 0) {
+            tl!("Last run: {model} used GPU and CPU operations.")
+        } else {
+            tl!("Last run: {model} used the GPU.")
+        }
+    } else {
+        tl!("Last run: {model} used the CPU.")
+    };
+    let label = crate::i18n::fmt(template, &[("model", model)]);
+    ui.label(label).on_hover_text(text(info, "device"));
+    if let Some(reason) = info.get("fallbackReason").and_then(Value::as_str) {
+        ui.label(tl!("GPU unavailable for this run; used the same model on CPU.")).on_hover_text(reason);
+    }
+}
+
 fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, status: &Value) {
     let top = ui.cursor().top();
     refresh_feedback(app, f, status);
@@ -553,6 +573,7 @@ fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>
     render_summary(app, ui, f, status, blocked);
     render_progress(app, ui, f, models_busy);
     render_feedback(app, ui, f, blocked);
+    render_execution(ui, status);
     render_remove_confirmation(app, ui, f, status, blocked);
     if !flag(status, "runtimeAvailable") {
         ui.label(tl!("Local AI inference is unavailable in this build. Classical Remove remains available."));
@@ -1099,6 +1120,24 @@ mod tests {
         h.state_mut().status["models"][0]["reason"] = json!("Model storage is read-only");
         h.run_steps(3);
         h.get_by_label("Model storage is read-only");
+    }
+    #[test]
+    fn model_gpu_execution_reports_mixed_and_cpu_fallback() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for (uses_gpu, fallback, expected) in [
+            (true, None, "Last run: MI-GAN v1 used GPU and CPU operations."),
+            (false, Some("GPU arena exceeds the captured budget"), "Last run: MI-GAN v1 used the CPU."),
+        ] {
+            let mut state = fixture();
+            state.status["lastExecution"] = json!({"modelId":"migan-v1","usesGpu":uses_gpu,"device":"test device",
+                "graph":{"gpuNodes":8,"cpuNodes":2,"transferNodes":2,"gpuArenaBytes":4096},"fallbackReason":fallback});
+            let mut harness = Harness::builder()
+                .with_size(vec2(700.0, 650.0))
+                .build_ui_state(|ui, state: &mut ModelUi| render(&mut state.app, ui, &mut state.fields, &state.status), state);
+            harness.run_steps(3);
+            assert!(harness.query_by_label(expected).is_some(), "completed backend must be visible: {expected}");
+            assert_eq!(harness.query_by_label("GPU unavailable for this run; used the same model on CPU.").is_some(), fallback.is_some());
+        }
     }
 }
 

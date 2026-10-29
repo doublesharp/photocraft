@@ -9,7 +9,7 @@ workspace = true
 
 [features]
 default = []
-native-inference = ["dep:tract-onnx"]
+native-inference = ["dep:tract-onnx", "dep:tract-metal", "dep:tract-gpu"]
 osor = ["dep:osor", "dep:serde_json"]
 osor-metal = ["osor", "osor/metal"]
 
@@ -25,6 +25,8 @@ tract-onnx = { version = "=0.23.9", optional = true }
 
 # Select Metal only on macOS; other native defaults retain CPU support.
 [target.'cfg(all(not(target_arch = "wasm32"), target_os = "macos"))'.dependencies]
+tract-metal = { version = "=0.23.9", optional = true }
+tract-gpu = { version = "=0.23.9", optional = true }
 osor = { git = "https://github.com/doublesharp/osor-rs", rev = "94584f64f2a94cb6228239d45bf0ebb4830ef1df", optional = true, features = ["metal"] }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))'.dependencies]
