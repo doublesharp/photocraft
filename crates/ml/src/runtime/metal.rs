@@ -1,5 +1,5 @@
 //! The pinned tract runtime owns lowering and arena installation; no custom kernels.
-use super::*;
+use super::{Arc, Error, ModelSpec, Result, Runnable, SymbolValues, TypedModel, model_error, runtime_for_name};
 use tract_gpu::fact::DeviceTypedFactExt;
 
 pub(super) fn prepare(graph: TypedModel, model: &ModelSpec) -> Result<(Arc<dyn Runnable>, crate::ExecutionInfo)> {
