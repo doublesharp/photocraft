@@ -125,6 +125,12 @@ checks that neither model reloads in the second batch. The OSOR service smoke
 also checks warm reuse when the next batch lists LaMa first but runs only OSOR.
 These are cache-lifecycle checks, not image-quality or throughput comparisons.
 
+The ignored macOS `real_lama_padding_does_not_reveal_removed_pixels` check uses
+`PHOTOCRAFT_ML_LAMA` and retained, hash-verified weights. It changes only the
+masked pixels of a small padded crop, compares CPU and Metal outputs within the
+existing one-code-value gate, and checks warm reuse. This establishes a bounded
+model-input isolation property, not broad visual quality.
+
 The ignored `real_models_match_reference_and_reuse_one_warm_family` test requires `PHOTOCRAFT_ML_LAMA`, `PHOTOCRAFT_ML_MIGAN` and `PHOTOCRAFT_ML_ORACLE_DIR`. The oracle directory supplies a 512×512 interleaved RGB byte image (`image.rgb`), a 512×512 binary white-is-hole mask (`mask.bin`), and interleaved RGB byte outputs from an independent reference (`lama.rgb`, `migan.rgb`). Both artifacts are imported and verified by their catalog hashes. The test compares decoded samples within one byte value and checks cold/warm loads. Fixtures and test adapters do not qualify a model or platform; these comparisons cover only the supplied scene.
 
 The ignored `real_onnx_cpu_metal_outputs_timings_and_drain` and
@@ -166,8 +172,14 @@ The 40 GiB model estimate includes headroom for activations and warm allocator
 retention observed in repeated Metal execution; it is not a hard RSS limit.
 
 The receipt pins exact source file lengths and SHA-256 values, including the raw
-manifest bytes. Before every inference, including warm forwards, the store reopens
-all source files through no-follow capabilities and rehashes them. The cold loader
+manifest bytes. Before every inference the store reopens all source files through
+no-follow capabilities and checks their identities and metadata. On Unix, an unchanged
+receipt and bundle reuse this service instance's byte verification; the stamp includes
+ctime and its nanoseconds, so restoring the size and mtime does not hide a write.
+Restarting, replacing or changing a file or receipt requires full rehashing. Hosts
+without Unix change stamps conservatively rehash every time. Failed reopens and
+verification invalidate reuse. The SHA-256 implementation matches the loader's pinned
+version and uses runtime-detected hardware instructions where available. The cold loader
 receives the trusted manifest SHA-256 and validates the exact tensor bytes parsed
 against its pinned manifest; a post-load manifest comparison provides an additional
 check. Import/hash verification does not claim that the neural graph has successfully
@@ -179,7 +191,11 @@ The shared-store same-user race limitations described above still apply.
 
 The initial context limit preserves aspect ratio, downsamples only above a 512 px
 long side, and reflection-pads each axis to a multiple of eight (minimum 32 px).
-Padding is known mask context. RGB and the library's learned edit alpha are restored
+Reflection padding carries the reduced hole mask with its RGB: reflected object
+pixels stay unknown, rather than becoming false context for the model. The mask
+is reduced once before padding, so thin crops do not repeatedly scan source
+footprints. If reduction removes the last known context, preparation returns an
+error. RGB and the library's learned edit alpha are restored
 to the source crop dimensions. The bridge supplies explicit Gaussian posterior and
 diffusion noise from two frozen internal seeds, making repeated input reproducible
 without extending `RemovalInput`. Its decoded RGB already includes the library's

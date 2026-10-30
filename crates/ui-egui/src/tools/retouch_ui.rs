@@ -264,10 +264,8 @@ fn remove_params(o: &crate::state::ToolOptions) -> Value {
 
 fn removal_request(app: &PhotocraftApp, options: &crate::state::ToolOptions) -> Value {
     let mut params = remove_params(options);
-    if (options.remove_method == "ai" && app.session.prefs().generative_remove.selected_model == "osor-sdxl")
-        || (options.remove_method == "auto" && app.session.prefs().generative_remove.workflow == "recommended")
-    {
-        params["preview"] = json!(true);
+    if options.remove_method == "auto" && app.session.prefs().generative_remove.workflow == "recommended" && !options.remove_effects {
+        params["preview"] = json!(false);
     }
     params
 }
@@ -637,6 +635,19 @@ fn pct(ui: &mut egui::Ui, label: &str, v: &mut f32) {
     crate::widgets::value_field(ui, v, 1.0..=100.0, "%", 58.0);
 }
 
+fn remove_method_labels(session: &photocraft_engine::Session) -> [String; 3] {
+    let prefs = &session.prefs().generative_remove;
+    let automatic = match prefs.workflow.as_str() {
+        "recommended" => format!("{}: {} ({})", tl!("AI"), tl!("Auto"), tl!("LaMa + OSOR")),
+        "lama" => format!("{}: {} ({})", tl!("AI"), tl!("Auto"), tl!("LaMa")),
+        "compact" => format!("{}: {} ({})", tl!("AI"), tl!("Auto"), tl!("MI-GAN v1")),
+        _ => format!("{} ({})", tl!("Auto"), tl!("Classical")),
+    };
+    let service = session.removal_service();
+    let selected = service.catalog().iter().find(|model| model.id == prefs.selected_model).map(|model| model.label).unwrap_or(prefs.selected_model.as_str());
+    [tl!("Classical").into(), automatic, format!("{}: {}", tl!("AI"), tl!(selected))]
+}
+
 /// Options bar for the retouching and smart-selection tools. Returns false for other tools.
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bool {
     if !tool.is_brushlike() && !matches!(tool, Tool::QuickSelection | Tool::ObjectSelection | Tool::Patch | Tool::ContentAwareMove | Tool::RedEye)
@@ -668,8 +679,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         }
         Tool::Remove => {
             opt(ui, tl!("Method:"));
-            let methods = [("classical".into(), tl!("Classical")), ("auto".into(), tl!("Auto")), ("ai".into(), tl!("AI"))];
-            crate::widgets::dropdown(ui, "remove-method", tl!("Method"), &mut o.remove_method, &methods, 95.0);
+            let [classical, automatic, selected] = remove_method_labels(&app.session);
+            let methods = [("classical".into(), classical.as_str()), ("auto".into(), automatic.as_str()), ("ai".into(), selected.as_str())];
+            crate::widgets::dropdown_literal(ui, "remove-method", tl!("Method"), &mut o.remove_method, &methods, 205.0);
             let show_models = ui.button(tl!("Models…")).clicked();
             // Photoshop's options bar: Sample All Layers, Create a new layer, Remove after each
             // stroke; with strokes waiting, ✓ applies them and ⊘ drops them.

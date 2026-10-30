@@ -17,10 +17,7 @@ pub fn open(app: &mut PhotocraftApp) -> Result<(), String> {
     if let Some(saved) = app.session.prefs().dialogs.get(REMEMBERED) {
         let _ = opts.apply(saved);
     }
-    if !app.session.prefs().dialogs.get(REMEMBERED).is_some_and(|saved| saved.get("method").is_some())
-        && opts.sampling != "custom"
-        && super::ai::readiness(app).is_ok()
-    {
+    if super::ai::readiness(app).is_ok() {
         opts.method = "ai".into();
     }
     let mut initial_error = None;

@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use super::{
     Fingerprint, NativeService,
     capability::{Partial, StoreDir, same_file},
+    hex_digest,
 };
 use crate::{Error, ModelStatus, RemovalControl, Result, check};
 use osor::artifact::{MANIFEST_FILE, Manifest, PROMPT_FILE, UNET_FILE, VAE_FILE};
@@ -82,8 +83,30 @@ struct PinnedFile {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Verified {
     path: PathBuf,
-    receipt: Fingerprint,
-    files: Vec<Fingerprint>,
+    receipt: VerificationStamp,
+    files: Vec<VerificationStamp>,
+}
+
+/// ctime is specific to byte-verification reuse: publishing/removing hard links also
+/// changes it, so do not apply it to the store's general publication fingerprints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VerificationStamp {
+    fingerprint: Fingerprint,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+impl VerificationStamp {
+    fn of(file: &File) -> Result<Self> {
+        let meta = file.metadata()?;
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Ok(Self {
+            fingerprint: Fingerprint::of(&meta),
+            #[cfg(unix)]
+            changed: (meta.ctime(), meta.ctime_nsec()),
+        })
+    }
 }
 
 /// Capabilities and open identities remain alive through model loading and inference.
@@ -153,7 +176,7 @@ fn hash(file: &mut File, ctl: &dyn RemovalControl, decoded_limit: Option<u64>) -
         return Err(invalid("OSOR bundle changed while hashing"));
     }
     file.seek(SeekFrom::Start(0))?;
-    Ok((bytes, format!("{:x}", sha.finalize()), decoded))
+    Ok((bytes, hex_digest(sha.finalize()), decoded))
 }
 
 fn open_files(source: &StoreDir) -> Result<Vec<File>> {
@@ -162,8 +185,8 @@ fn open_files(source: &StoreDir) -> Result<Vec<File>> {
     Ok(files)
 }
 
-fn fingerprints(files: &[File]) -> Result<Vec<Fingerprint>> {
-    files.iter().map(|file| Ok(Fingerprint::of(&file.metadata()?))).collect()
+fn fingerprints(files: &[File]) -> Result<Vec<VerificationStamp>> {
+    files.iter().map(VerificationStamp::of).collect()
 }
 
 fn check_attached(source: &StoreDir, files: &[File]) -> Result<()> {
@@ -278,6 +301,7 @@ fn import_inner(
     {
         return Err(invalid("prepared OSOR manifest differs from the completed conversion"));
     }
+    let verified_files = fingerprints(&files)?;
     let mut pinned = Vec::new();
     let mut decoded_remaining = MAX_DECODED_WEIGHTS;
     for (name, file) in FILES.iter().zip(&mut files) {
@@ -286,7 +310,7 @@ fn import_inner(
         decoded_remaining = decoded_remaining.checked_sub(decoded).ok_or_else(|| invalid("OSOR decoded weight budget overflows"))?;
         pinned.push(PinnedFile { name: (*name).into(), bytes, sha256 });
     }
-    if pinned.first().is_none_or(|pin| pin.sha256 != format!("{:x}", Sha256::digest(&bytes))) {
+    if pinned.first().is_none_or(|pin| pin.sha256 != hex_digest(Sha256::digest(&bytes))) {
         return Err(invalid("OSOR manifest changed while importing"));
     }
     let reference = Reference { schema: 1, managed, path, manifest, files: pinned };
@@ -301,7 +325,8 @@ fn import_inner(
     store.ensure_attached()?;
     check(ctl)?;
     ctl.begin_irreversible()?;
-    let mut publication = ReceiptPublication { store: &store, file: &partial.file, rollback: false };
+    let publication_file = partial.file.try_clone()?;
+    let mut publication = ReceiptPublication { store: &store, file: &publication_file, rollback: false };
     match store.dir.hard_link(&partial.name, &store.dir, RECEIPT) {
         Ok(()) => publication.rollback = true,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -314,8 +339,6 @@ fn import_inner(
     }
     store.ensure_attached()?;
     let receipt = store.open_regular(OsStr::new(RECEIPT))?;
-    let verified = Verified { path: reference.path.clone(), receipt: Fingerprint::of(&receipt.metadata()?), files: fingerprints(&files)? };
-    *service.osor_verified.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verified);
     *service.osor_invalid.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     ctl.progress(1., "Local OSOR bundle reference imported");
     check_attached(&source, &files)?;
@@ -323,22 +346,44 @@ fn import_inner(
     if !same_file(&receipt, &store.open_regular(OsStr::new(RECEIPT))?)? {
         return Err(invalid("OSOR receipt changed during publication"));
     }
+    // Removing the owned staging hard link changes the receipt ctime. Keep the
+    // rollback handle alive, then verify its small contents before caching that stamp.
+    drop(partial);
+    let receipt_stamp = VerificationStamp::of(&receipt)?;
+    let mut current_receipt = store.open_regular(OsStr::new(RECEIPT))?;
+    if !same_file(&receipt, &current_receipt)? || bounded_read(&mut current_receipt, MAX_RECEIPT)? != bytes || VerificationStamp::of(&receipt)? != receipt_stamp
+    {
+        return Err(invalid("OSOR receipt changed during publication"));
+    }
+    if fingerprints(&files)? != verified_files {
+        return Err(invalid("OSOR bundle changed during import"));
+    }
+    let verified = Verified { path: reference.path.clone(), receipt: receipt_stamp, files: verified_files };
+    *service.osor_verified.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verified);
     publication.rollback = false;
     Ok(())
 }
 
 pub(super) fn verify(service: &NativeService, ctl: &dyn RemovalControl) -> Result<HeldReference> {
-    *service.osor_verified.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    check(ctl)?;
+    // Taking the stamp invalidates it on every failure, including a failed reopen.
+    let previous = service.osor_verified.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     let (store, receipt, reference) = read_reference(service)?;
     let source = StoreDir::acquire(&reference.path, false)?;
     let mut files = open_files(&source)?;
-    let mut decoded_remaining = MAX_DECODED_WEIGHTS;
-    for (file, pin) in files.iter_mut().zip(&reference.files) {
-        ctl.progress(0.02, "Reverifying local OSOR bundle");
-        let (bytes, digest, decoded) = hash(file, ctl, (pin.name != MANIFEST_FILE).then_some(decoded_remaining))?;
-        decoded_remaining = decoded_remaining.checked_sub(decoded).ok_or_else(|| invalid("OSOR decoded weight budget overflows"))?;
-        if bytes != pin.bytes || digest != pin.sha256 {
-            return Err(invalid(format!("OSOR {} no longer matches its imported SHA-256; import the intended bundle again", pin.name)));
+    let before = Verified { path: reference.path.clone(), receipt: VerificationStamp::of(&receipt)?, files: fingerprints(&files)? };
+    // Unix ctime changes even when a writer restores the original length and mtime.
+    // Hosts without that change stamp retain full hashing on every operation.
+    let reusable = cfg!(unix) && previous.as_ref() == Some(&before);
+    if !reusable {
+        let mut decoded_remaining = MAX_DECODED_WEIGHTS;
+        for (file, pin) in files.iter_mut().zip(&reference.files) {
+            ctl.progress(0.02, "Reverifying local OSOR bundle");
+            let (bytes, digest, decoded) = hash(file, ctl, (pin.name != MANIFEST_FILE).then_some(decoded_remaining))?;
+            decoded_remaining = decoded_remaining.checked_sub(decoded).ok_or_else(|| invalid("OSOR decoded weight budget overflows"))?;
+            if bytes != pin.bytes || digest != pin.sha256 {
+                return Err(invalid(format!("OSOR {} no longer matches its imported SHA-256; import the intended bundle again", pin.name)));
+            }
         }
     }
     check_attached(&source, &files)?;
@@ -346,7 +391,11 @@ pub(super) fn verify(service: &NativeService, ctl: &dyn RemovalControl) -> Resul
     if !same_file(&receipt, &store.open_regular(OsStr::new(RECEIPT))?)? {
         return Err(invalid("OSOR reference changed during verification"));
     }
-    let verified = Verified { path: reference.path.clone(), receipt: Fingerprint::of(&receipt.metadata()?), files: fingerprints(&files)? };
+    let verified = Verified { path: reference.path.clone(), receipt: VerificationStamp::of(&receipt)?, files: fingerprints(&files)? };
+    if verified != before {
+        return Err(invalid("OSOR bundle or receipt changed during verification"));
+    }
+    check(ctl)?;
     *service.osor_verified.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verified);
     Ok(HeldReference { reference, _source: source, _files: files })
 }
@@ -360,10 +409,10 @@ pub(super) fn status(service: &NativeService, runtime: bool, busy: bool) -> Mode
         let source = StoreDir::acquire(&reference.path, false)?;
         let files = open_files(&source)?;
         let current = fingerprints(&files)?;
-        if current.iter().zip(&reference.files).any(|(actual, pin)| actual.bytes != pin.bytes) {
+        if current.iter().zip(&reference.files).any(|(actual, pin)| actual.fingerprint.bytes != pin.bytes) {
             return Err(invalid("OSOR bundle file size changed; import the intended bundle again"));
         }
-        Ok(Verified { path: reference.path, receipt: Fingerprint::of(&receipt.metadata()?), files: current })
+        Ok(Verified { path: reference.path, receipt: VerificationStamp::of(&receipt)?, files: current })
     };
     match inspect() {
         Ok(current) => {

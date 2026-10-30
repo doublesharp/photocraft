@@ -591,13 +591,148 @@ fn lama_fill_overlay_and_unrelated_preferences_reuse_the_current_candidate() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn lama_fill_switching_methods_and_model_manager_release_the_candidate() {
+fn lama_fill_comparison_reuses_the_exact_candidate_without_another_forward() {
+    use std::sync::{Arc, atomic::Ordering};
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, calls) = lama_app();
+    let source = Arc::clone(&app.session.active().unwrap().doc);
+    let history = app.session.active().unwrap().history.past_len();
+    open(&mut app).unwrap();
+    control(&mut app, &json!({"waitPreview":true})).unwrap();
+    let id = ws(&app).ai.id.unwrap();
+    let image = ws(&app).preview.pending_image.clone().unwrap();
+    let classical = control(&mut app, &json!({"method":"classical","waitPreview":true})).unwrap();
+    assert_eq!(app.session.fill_preview_status()["id"], id, "comparison must retain the completed AI candidate");
+    assert_eq!(classical["previewId"], Value::Null, "Classical must not describe the retained AI result as its visible preview");
+    assert_eq!(classical["retainedAiPreviewId"], id);
+    assert_eq!(classical["previewReady"], true);
+    control(&mut app, &json!({"method":"ai","waitPreview":true})).unwrap();
+    assert_eq!(ws(&app).ai.id, Some(id));
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(ws(&app).preview.pending_image.as_ref().unwrap(), &image, "returning to AI must restore its pixels, not the Classical image");
+    assert!(Arc::ptr_eq(&app.session.active().unwrap().doc, &source));
+    assert_eq!(app.session.active().unwrap().history.past_len(), history);
+    control(&mut app, &json!({"apply":true})).unwrap();
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(app.session.active().unwrap().history.past_len(), history + 1);
+    cancel(&mut app);
+    app.session.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc, source);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_comparison_keeps_ai_when_classical_has_no_sampling_area() {
+    use std::sync::atomic::Ordering;
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, calls) = lama_app();
+    open(&mut app).unwrap();
+    control(&mut app, &json!({"waitPreview":true})).unwrap();
+    let id = ws(&app).ai.id;
+    assert!(control(&mut app, &json!({"method":"classical","sampling":"custom","waitPreview":true})).is_err());
+    control(&mut app, &json!({"method":"ai","waitPreview":true})).unwrap();
+    assert_eq!(ws(&app).ai.id, id);
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert!(ws(&app).preview.error.is_none());
+    cancel(&mut app);
+    assert!(app.session.removal_service().admit("lama", 64, u64::MAX).is_ok());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_comparison_invalidates_ai_when_the_fill_area_changes() {
+    use std::sync::atomic::Ordering;
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, calls) = lama_app();
+    open(&mut app).unwrap();
+    control(&mut app, &json!({"waitPreview":true})).unwrap();
+    let id = ws(&app).ai.id;
+    control(&mut app, &json!({"method":"classical","waitPreview":true})).unwrap();
+    control(&mut app, &json!({"expand":3,"waitPreview":true})).unwrap();
+    assert_eq!(app.session.fill_preview_status()["ready"], false);
+    assert!(app.session.removal_service().admit("lama", 64, u64::MAX).is_ok());
+    control(&mut app, &json!({"method":"ai","waitPreview":true})).unwrap();
+    assert_ne!(ws(&app).ai.id, id);
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    cancel(&mut app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_comparison_classical_apply_uses_classical_pixels_and_releases_ai() {
+    use std::sync::{Arc, atomic::Ordering};
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, calls) = lama_app();
+    let source = Arc::clone(&app.session.active().unwrap().doc);
+    open(&mut app).unwrap();
+    control(&mut app, &json!({"waitPreview":true})).unwrap();
+    control(&mut app, &json!({"method":"classical","waitPreview":true})).unwrap();
+    control(&mut app, &json!({"apply":true})).unwrap();
+    let layer = app.session.active().unwrap().active_layer.unwrap();
+    assert!(px(&app, layer, 100, 80)[1] > 0.2, "Classical Apply must not accept the black AI fixture");
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(app.session.fill_preview_status()["ready"], false);
+    assert!(app.session.removal_service().admit("lama", 64, u64::MAX).is_ok());
+    cancel(&mut app);
+    app.session.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc, source);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_comparison_releases_a_candidate_after_processing_is_disabled() {
+    use std::sync::atomic::Ordering;
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, calls) = lama_app();
+    open(&mut app).unwrap();
+    control(&mut app, &json!({"waitPreview":true})).unwrap();
+    control(&mut app, &json!({"method":"classical","waitPreview":true})).unwrap();
+    app.session.edit_prefs(|prefs| prefs.generative_remove.enabled = false);
+    control(&mut app, &json!({"waitPreview":true})).unwrap();
+    assert_eq!(ws(&app).ai.id, None);
+    assert_eq!(app.session.fill_preview_status()["ready"], false);
+    assert!(app.session.removal_service().admit("lama", 64, u64::MAX).is_ok());
+    assert!(control(&mut app, &json!({"method":"ai","waitPreview":true})).is_err());
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    cancel(&mut app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_comparison_method_choices_are_directly_clickable() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    use std::sync::atomic::Ordering;
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, calls) = lama_app();
+    open(&mut app).unwrap();
+    control(&mut app, &json!({"waitPreview":true})).unwrap();
+    let id = ws(&app).ai.id;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1100.0, 800.0))
+        .with_context_setup(|ctx| PhotocraftApp::setup_context(ctx, crate::theme::ThemeKind::ALL[0]))
+        .build_ui_state(|ui, app: &mut PhotocraftApp| show(app, ui.ctx()), app);
+    h.run_steps(2);
+    h.get_by_label("Classical").click();
+    h.run_steps(2);
+    assert_eq!(ws(h.state()).opts.method, "classical");
+    assert_eq!(ws(h.state()).ai.id, id);
+    h.get_by_label("LaMa (AI)").click();
+    h.run_steps(3);
+    assert_eq!(ws(h.state()).opts.method, "ai");
+    assert_eq!(ws(h.state()).ai.id, id);
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    cancel(h.state_mut());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn lama_fill_model_manager_releases_the_candidate_after_comparison() {
     let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (mut app, _) = lama_app();
     open(&mut app).unwrap();
     control(&mut app, &json!({"waitPreview":true})).unwrap();
     control(&mut app, &json!({"method":"classical","waitPreview":true})).unwrap();
-    assert_eq!(app.session.fill_preview_status()["ready"], false);
+    assert_eq!(app.session.fill_preview_status()["ready"], true);
     control(&mut app, &json!({"method":"ai","waitPreview":true})).unwrap();
     let area = ws(&app).fill_edits.clone();
     control(&mut app, &json!({"models":true})).unwrap();
@@ -779,4 +914,59 @@ fn lama_fill_ok_after_apply_closes_without_another_forward_or_history_step() {
         assert_eq!(calls.load(Ordering::Acquire), 1);
         assert_eq!(app.session.active().unwrap().history.past_len(), history);
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn ai_default_fill_prefers_ready_lama_when_reopening_after_classical_comparison() {
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, _) = lama_app();
+    app.session.edit_prefs(|prefs| {
+        prefs.dialogs.insert(REMEMBERED.into(), json!({"method":"classical","sampling":"custom","mirror":true,"output":"duplicate"}));
+    });
+    open(&mut app).unwrap();
+    assert_eq!(ws(&app).opts.method, "ai", "ready AI should be the default for a new fill session");
+    assert_eq!(ws(&app).opts.sampling, "custom");
+    assert!(ws(&app).opts.mirror);
+    assert_eq!(ws(&app).opts.output, "duplicate");
+    control(&mut app, &json!({"method":"classical"})).unwrap();
+    assert_eq!(ws(&app).opts.method, "classical", "the active edit must respect an explicit Classical choice");
+    cancel(&mut app);
+    open(&mut app).unwrap();
+    assert_eq!(ws(&app).opts.method, "ai");
+    cancel(&mut app);
+    app.session.edit_prefs(|prefs| prefs.generative_remove.enabled = false);
+    open(&mut app).unwrap();
+    assert_eq!(ws(&app).opts.method, "classical", "disabled AI must not be selected automatically");
+    cancel(&mut app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn ai_default_remove_uses_ready_selected_model_but_keeps_explicit_methods() {
+    let _lock = crate::retouch_ui::tests::REMOVE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut app, _) = lama_app();
+    app.session.edit_prefs(|prefs| {
+        prefs.generative_remove.setup_complete = true;
+        prefs.generative_remove.workflow = "recommended".into();
+        prefs.generative_remove.selected_model = "lama".into();
+        prefs.tool_options = Value::Null;
+    });
+    crate::tool_memory::restore(&mut app);
+    assert_eq!(app.ui.tool_options.remove_method, "ai", "completed AI setup should replace the untouched Auto default");
+    app.ui.tool_options.remove_method = "auto".into();
+    crate::tool_memory::persist(&mut app, &egui::Context::default());
+    assert_eq!(app.session.prefs().tool_options["remove_method"], "auto", "an explicit Auto choice must survive relaunch");
+    for method in ["classical", "auto", "ai"] {
+        app.session.edit_prefs(|prefs| prefs.tool_options = json!({"remove_method":method}));
+        crate::tool_memory::restore(&mut app);
+        assert_eq!(app.ui.tool_options.remove_method, method);
+    }
+    app.ui.tool_options.remove_method = "auto".into();
+    app.session.edit_prefs(|prefs| {
+        prefs.tool_options = Value::Null;
+        prefs.generative_remove.enabled = false;
+    });
+    crate::tool_memory::restore(&mut app);
+    assert_eq!(app.ui.tool_options.remove_method, "auto");
 }

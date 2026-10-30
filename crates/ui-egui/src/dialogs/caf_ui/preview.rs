@@ -61,12 +61,17 @@ impl Preview {
 /// fill refuses that case with the same words).
 const NOTHING_TO_SAMPLE: &str = "nothing to sample from: the sampling area has no pixels outside the fill area";
 
+/// AI inputs are independent of remembered Classical sampling/adaptation options.
+pub(super) fn ai_params(w: &CafWorkspace) -> Value {
+    json!({"method":"ai", "modelId":"lama", "sampling":"rectangular", "sampleAllLayers":w.opts.sample_all,
+        "output":w.opts.output,"layer":w.layer.0,"fillEdits":w.fill_edits})
+}
+
 /// The plan of the current state (without strokes when `strokes` is false).
 pub(super) fn plan_params(w: &CafWorkspace, strokes: bool) -> Value {
     let o = &w.opts;
     if o.method == "ai" {
-        return json!({"method":"ai", "modelId":"lama", "sampling":"rectangular", "sampleAllLayers":o.sample_all,
-            "output":o.output,"layer":w.layer.0,"fillEdits":w.fill_edits});
+        return ai_params(w);
     }
     let mut p = json!({
         "sampling": o.sampling,
@@ -183,7 +188,7 @@ pub(super) fn wait_preview(app: &mut PhotocraftApp) -> Result<(), String> {
     if app.distort.caf.as_ref().is_some_and(|w| w.opts.method == "ai") {
         return super::ai::wait(app);
     }
-    super::ai::clear(app);
+    super::ai::pause(app);
     let (doc, layer, p, want, limit) = {
         let w = app.distort.caf.as_ref().ok_or("Content-Aware Fill is not open")?;
         let st = app.session.active().ok_or("no document")?;
@@ -276,7 +281,7 @@ pub(super) fn drive_preview(app: &mut PhotocraftApp, ctx: &egui::Context, draggi
         super::ai::drive(app, ctx, dragging);
         return;
     }
-    super::ai::clear(app);
+    super::ai::pause(app);
     let doc = app.session.active().map(|s| s.doc.clone());
     let Some(w) = app.distort.caf.as_mut() else { return };
     let pv = &mut w.preview;

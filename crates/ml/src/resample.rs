@@ -51,6 +51,7 @@ impl Geometry {
         let pixels = self.side.checked_mul(self.rows).ok_or_else(|| Error::InvalidInput("model crop is too large".into()))?;
         let mut rgb = vec![0.; pixels * 3];
         let mut mask = vec![0.; pixels];
+        self.prepare_mask(&input.mask, &mut mask)?;
         for y in 0..self.rows {
             let ry = reflect(y as isize - self.pad_y as isize, self.resized_height);
             for x in 0..self.side {
@@ -63,13 +64,27 @@ impl Geometry {
                     let dst = rgb.get_mut(c * pixels + i).ok_or_else(|| Error::InvalidInput("invalid RGB crop bounds".into()))?;
                     *dst = value;
                 }
-                // RGB padding is reflected, but its mask is known context. Reflecting the
-                // mask would create duplicate holes and repeat work for narrow crops.
-                if x < self.pad_x || x >= self.pad_x + self.resized_width || y < self.pad_y || y >= self.pad_y + self.resized_height {
-                    continue;
-                }
-                // Conservative reduction keeps a narrow painted wire in the hole even when
-                // downsampling. Known/protected pixels remain known in the original write mask.
+                // A reflected sample has the same validity as the source it came from.
+                // Treating reflected object pixels as known context can make a model copy
+                // the object back into the repair. Read only the precomputed interior mask.
+                let source = (self.pad_y + ry) * self.side + self.pad_x + rx;
+                let coverage = mask.get(source).copied().ok_or_else(|| Error::InvalidInput("invalid reflected mask bounds".into()))?;
+                let dst = mask.get_mut(i).ok_or_else(|| Error::InvalidInput("invalid padded mask bounds".into()))?;
+                *dst = coverage;
+            }
+        }
+        if mask.iter().all(|v| *v > 0.) {
+            return Err(Error::InvalidInput("the mask leaves no model context after crop reduction; use a smaller repair".into()));
+        }
+        Ok((rgb, mask))
+    }
+
+    fn prepare_mask(&self, source: &[f32], mask: &mut [f32]) -> Result<()> {
+        // Reduce each real source footprint once. Reflecting this reduced mask alongside RGB
+        // keeps preprocessing bounded even for a long, thin crop with extensive padding.
+        for ry in 0..self.resized_height {
+            for rx in 0..self.resized_width {
+                // Conservative reduction keeps a one-pixel painted wire in the hole.
                 let x0 = rx * self.width / self.resized_width;
                 let x1 = ((rx + 1) * self.width).div_ceil(self.resized_width).min(self.width);
                 let y0 = ry * self.height / self.resized_height;
@@ -77,7 +92,8 @@ impl Geometry {
                 let mut hole = false;
                 for sy in y0..y1 {
                     for sx in x0..x1 {
-                        if input.mask.get(sy * self.width + sx).is_some_and(|v| *v > 0.) {
+                        let coverage = source.get(sy * self.width + sx).ok_or_else(|| Error::InvalidInput("invalid source mask length".into()))?;
+                        if *coverage > 0. {
                             hole = true;
                             break;
                         }
@@ -86,15 +102,12 @@ impl Geometry {
                         break;
                     }
                 }
-                if let Some(dst) = mask.get_mut(i) {
-                    *dst = if hole { 1. } else { 0. };
-                }
+                let index = (self.pad_y + ry) * self.side + self.pad_x + rx;
+                let dst = mask.get_mut(index).ok_or_else(|| Error::InvalidInput("invalid reduced mask bounds".into()))?;
+                *dst = if hole { 1. } else { 0. };
             }
         }
-        if mask.iter().all(|v| *v > 0.) {
-            return Err(Error::InvalidInput("the mask leaves no model context after crop reduction; use a smaller repair".into()));
-        }
-        Ok((rgb, mask))
+        Ok(())
     }
 
     #[cfg(any(test, feature = "osor"))]
@@ -191,13 +204,71 @@ mod tests {
         assert_eq!(geometry.restore(&rgb).unwrap(), input.rgb);
     }
     #[test]
-    fn reflected_image_padding_does_not_duplicate_the_hole() {
+    fn reflected_image_padding_preserves_unknown_coverage() {
         let input = RemovalInput { width: 2, height: 1, rgb: vec![0.25; 6], mask: vec![1., 0.] };
         let geometry = Geometry::new(2, 1, 4).unwrap();
         let (_, mask) = geometry.prepare(&input).unwrap();
-        assert_eq!(mask.iter().filter(|&&v| v > 0.).count(), 1, "padding must be known context, not repeated holes");
+        assert_eq!(mask.iter().filter(|&&v| v > 0.).count(), 8, "reflected unknown pixels stay masked");
         assert_eq!(mask[geometry.pad_y * geometry.side + geometry.pad_x], 1.);
     }
+    #[test]
+    fn reflected_padding_does_not_expose_masked_source() {
+        // A small crop is reflected extensively for LaMa and rounded to a multiple of
+        // eight for OSOR. Neither may present reflected object pixels as known context.
+        for geometry in [Geometry::new(3, 2, 8).unwrap(), Geometry::osor(3, 2).unwrap()] {
+            let mut input = RemovalInput { width: 3, height: 2, rgb: vec![0.25; 18], mask: vec![0., 1., 0., 0., 0., 0.] };
+            let (before, mask) = geometry.prepare(&input).unwrap();
+            input.rgb[3..6].fill(1.);
+            let (after, after_mask) = geometry.prepare(&input).unwrap();
+            assert_eq!(mask, after_mask);
+            let pixels = geometry.side * geometry.rows;
+            for (i, coverage) in mask.iter().enumerate() {
+                if *coverage == 0. {
+                    for channel in 0..3 {
+                        assert_eq!(before[channel * pixels + i], after[channel * pixels + i], "masked source leaked into known model context at {i}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reflected_padding_cannot_invent_context_lost_during_reduction() {
+        let mut input = RemovalInput { width: 1024, height: 1, rgb: vec![0.25; 3072], mask: vec![1.; 1024] };
+        input.mask[0] = 0.;
+        input.validate().unwrap();
+        // The only known source pixel shares a reduced footprint with an unknown one.
+        // Padding cannot rescue the resulting context-free model input.
+        for geometry in [Geometry::new(1024, 1, 512).unwrap(), Geometry::osor(1024, 1).unwrap()] {
+            assert!(matches!(geometry.prepare(&input), Err(Error::InvalidInput(_))));
+        }
+    }
+
+    #[test]
+    fn downsampled_and_padded_known_pixels_exclude_masked_rgb() {
+        for (width, height, side) in [(17, 5, 8), (5, 17, 8), (1025, 3, 512), (1, 1025, 512)] {
+            let count = (width * height) as usize;
+            let mut input = RemovalInput { width, height, rgb: vec![0.; count * 3], mask: vec![0.; count] };
+            // Include image edges and fractional coverage: every positive source coverage
+            // is unknown to the model, while the original write mask stays unchanged.
+            for i in [0, count / 2, count - 1] {
+                input.mask[i] = 0.25;
+                input.rgb[i * 3..(i + 1) * 3].fill(1.);
+            }
+            let geometry = Geometry::new(width, height, side).unwrap();
+            let (rgb, mask) = geometry.prepare(&input).unwrap();
+            let pixels = geometry.side * geometry.rows;
+            assert!(mask.contains(&0.));
+            for (i, coverage) in mask.iter().enumerate() {
+                if *coverage == 0. {
+                    for channel in 0..3 {
+                        assert_eq!(rgb[channel * pixels + i], 0., "unknown RGB leaked at {width}x{height}, pixel {i}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn downsampling_does_not_erase_a_one_pixel_wire() {
         let input = RemovalInput { width: 1024, height: 2, rgb: vec![0.; 1024 * 2 * 3], mask: (0..2048).map(|i| if i == 3 { 1. } else { 0. }).collect() };

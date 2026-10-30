@@ -8,7 +8,7 @@ The first use of Remove proposes the **Recommended** LaMa + OSOR combination whe
 
 | Setup | Download if no models are installed | Processing |
 | --- | ---: | --- |
-| Recommended | 8,623,145,822 bytes (about 8.6 GB) | LaMa for narrow marks; OSOR for objects, with an explicit preview |
+| Recommended | 8,623,145,822 bytes (about 8.6 GB) | LaMa for narrow marks; OSOR for objects; ordinary repairs apply immediately |
 | Smaller: LaMa | 208,044,816 bytes (208 MB) | LaMa for every AI repair |
 | Compact: MI-GAN v1 | 29,546,882 bytes (30 MB) | MI-GAN v1 for every AI repair |
 | Classical | None | Existing content-aware algorithm |
@@ -24,9 +24,23 @@ Normal **Download and use…** and **Use this setup…** model actions open the 
 
 Content-Aware Fill can also use LaMa through the same installed model, processing opt-in, memory allowance and idle cache. Its Classical method retains custom sampling controls. See [Smart Fill with LaMa](smart-fill.md). Prompted Generative Fill remains separate work.
 
-Use **Auto** with the selected setup. Recommended groups touching stroke footprints, then routes each independent region using its original source pixels. The automatic rule sends narrow regions (footprint aspect ratio at least 3:1 and minor extent at most 64 pixels) to LaMa and other regions to OSOR. **Repair type** can explicitly select small marks or objects for a stroke. This is a geometry rule informed by the prior manual workflow; broad image-quality qualification remains open.
+The Method selector names both AI routes: **AI: Auto (LaMa + OSOR)** uses
+Recommended routing, while **AI: LaMa** (or the selected model's name) uses that
+model for every repair. Other setups name their own Auto route; Custom/Classical
+Auto is labelled as Classical. Once setup is complete and the selected enabled
+model is ready, an untouched Remove default starts on that AI model. Saved explicit
+Remove choices, including Auto and Classical, are kept.
 
-The result combines local repairs into one candidate. Review it on the canvas and choose **Apply** (Enter) or **Cancel** (Esc). Applying does not repeat inference and creates one undo step. **Shadows and reflections** allows OSOR to repair its bounded context around the painted object, within the current selection; LaMa remains restricted to painted marks. Object cores take precedence where repaired contexts overlap. The predicted OSOR alpha is not applied a second time to its already blended RGB.
+Use **AI: Auto (LaMa + OSOR)** with the Recommended setup. Recommended groups touching stroke footprints, then routes each independent region using its original source pixels. The automatic rule sends narrow regions (footprint aspect ratio at least 3:1 and minor extent at most 64 pixels) to LaMa and other regions to OSOR. **Repair type** can explicitly select small marks or objects for a stroke. This is a geometry rule informed by the prior manual workflow; broad image-quality qualification remains open.
+
+Ordinary repairs apply immediately after processing, consistently for LaMa,
+OSOR and Recommended Auto, as one Undo step. With **Remove after each stroke**
+off, Enter processes and applies the queued regions together.
+
+**Shadows and reflections** retains a canvas preview with **Apply** (Enter) and
+**Cancel** (Esc), because OSOR may repair its bounded context around the painted
+object, within the current selection. Applying uses the exact candidate without
+another inference and creates one Undo step. LaMa remains restricted to painted marks. Object cores take precedence where repaired contexts overlap. The predicted OSOR alpha is not applied a second time to its already blended RGB.
 
 **Remove after each stroke** starts processing on release. Turn it off to paint several regions and press Enter to process them together. Each queued stroke retains its brush and repair type. **Create a new layer** preserves the source layer. Esc cancels queued strokes, a ready preview, or cancellable work. A ready preview changes neither the document nor its history.
 
@@ -38,7 +52,19 @@ The learned bridge accepts full-colour RGB U8/U16 raster targets in sRGB, with o
 
 The operation captures the source, target, selection, brush geometry, model and settings before work begins. The active gesture freezes its effective brush at pointer-down, so later brush changes cannot alter its tinted footprint. Queued UI strokes are discarded when their context changes, including a change and restoration within one action. Oversized rendered footprints are rejected before coverage allocation; the bound includes soft-tip tails, sampled-tip rotation, and scattering. Busy gestures are refused before capture, so a press during processing cannot become a later accidental stroke.
 
-Small repairs read bounded source regions rather than resize the document. The model input pads the crop while preserving aspect ratio; oversized crops are explicitly scaled and the command result reports `inferenceScale` and the crop bounds. OSOR downsamples only above a 512 px long side, pads to multiples of eight (at least 32 px), and restores RGB and predicted edit alpha to the source crop dimensions. Its RGB already contains latent-space alpha blending; the predicted alpha is not multiplied into that RGB again. The service permits one model operation at a time. It keeps loaded models for five idle minutes after processing and any pending preview finish, so consecutive removals can reuse them. LaMa and OSOR stay loaded together when their combined memory estimates and the image buffers fit the configured memory allowance; a tighter allowance releases the companion before loading the next model. Preflight also caps the combined generated brush work at 262,144 estimated dabs, including scattering and dual tips. Live and queued tint use the same check before rendering. Admission includes spare capacity for generated dabs, walker steps and smoothing buffers as well as the model working-set estimate and a conservative pixel-buffer bound against the captured Preferences → Performance → Memory Usage value before allocating crop buffers. OSOR admission uses a conservative 40 GiB model working-set estimate plus transient buffers. Bundle headers are bounded to 12 GiB of decoded F32 weights, and the native loader enforces that bound on the actual hashed input before tensor allocation. For native evaluation, set Memory Usage to 49,152 MiB (`performance.memoryUsageMb`) to allow headroom for transients; the default budget can reject OSOR before allocation. This estimate is not an operating-system RSS cap.
+Small repairs read bounded source regions rather than resize the document. The model input pads the crop while preserving aspect ratio; oversized crops are explicitly scaled and the command result reports `inferenceScale` and the crop bounds. OSOR downsamples only above a 512 px long side, pads to multiples of eight (at least 32 px), and restores RGB and predicted edit alpha to the source crop dimensions. Its RGB already contains latent-space alpha blending; the predicted alpha is not multiplied into that RGB again. On macOS and other Unix hosts, consecutive operations reuse an unchanged bundle's
+in-session verification instead of hashing its weights for every stroke. File and
+receipt identities, size, timestamps and Unix change stamps are checked each time;
+restart or a change requires hashing again. First use still loads the model, while
+a warm model skips loading. Hosts without Unix change stamps retain full verification.
+The service permits one model operation at a time. It keeps loaded models for five idle minutes after processing and any pending preview finish, so consecutive removals can reuse them. LaMa and OSOR stay loaded together when their combined memory estimates and the image buffers fit the configured memory allowance; a tighter allowance releases the companion before loading the next model. Preflight also caps the combined generated brush work at 262,144 estimated dabs, including scattering and dual tips. Live and queued tint use the same check before rendering. Admission includes spare capacity for generated dabs, walker steps and smoothing buffers as well as the model working-set estimate and a conservative pixel-buffer bound against the captured Preferences → Performance → Memory Usage value before allocating crop buffers. OSOR admission uses a conservative 40 GiB model working-set estimate plus transient buffers. Bundle headers are bounded to 12 GiB of decoded F32 weights, and the native loader enforces that bound on the actual hashed input before tensor allocation. For native evaluation, set Memory Usage to 49,152 MiB (`performance.memoryUsageMb`) to allow headroom for transients; the default budget can reject OSOR before allocation. This estimate is not an operating-system RSS cap.
+
+Reflected model padding carries the same unknown-pixel mask as the RGB it
+reflects, so a reflected copy of the removed object is not exposed as known
+context. Mask reduction runs once before padding. A crop whose last known context
+is lost during reduction is rejected with a smaller-repair error. These rules
+change model input only; the original document selection and write bounds remain
+authoritative.
 
 A preview retains the exact completed candidate and its resource admission until Apply or Cancel; applying it does not run inference again. Source, target, selection, document, working-profile or relevant settings changes invalidate it. A stale or mismatched preview cannot be applied. Recommended hybrid and effects previews require explicit review and are unavailable during action or script playback; ordinary LaMa/MI-GAN action playback is unchanged.
 
@@ -105,3 +131,15 @@ operations; warm hardware timestamps confirmed GPU dispatch. Cache switching,
 retained-output ownership and cancellation/drain passed. Timings are shared-host
 diagnostics, and this scene does not establish broad quality or a performance
 budget. MI-GAN remains on CPU pending separate GPU qualification.
+
+### 2026-10-29 startup and workflow check
+
+The local signed macOS test bundle passed five native workflow checks on one
+public-domain reconstruction crop: cold/warm OSOR, LaMa, Recommended Auto and
+OSOR effects. Ordinary strokes committed immediately; effects retained review.
+Every case preserved outside-selection pixels and restored its input with one
+Undo. Warm OSOR reused the loaded model and reproduced the cold result exactly.
+Native AI defaults and model labels were inspected at large and small sizes.
+This is workflow/startup evidence, not broad visual-quality or full-size release
+performance qualification. Engine tests: 2,712 pass; UI: 4,429 serial pass; command
+panic hunt, layering and wasm pass. The tested bundle was installed locally.

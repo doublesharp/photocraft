@@ -18,7 +18,8 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-sha2 = "=0.10.9"
+# Match the OSOR loader; 0.11 uses runtime-detected SHA instructions on Apple silicon.
+sha2 = "=0.11.1"
 serde_json = { workspace = true, optional = true }
 tempfile = "3"
 tract-onnx = { version = "=0.23.9", optional = true }

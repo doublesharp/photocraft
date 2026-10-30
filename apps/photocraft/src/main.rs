@@ -509,6 +509,7 @@ fn main() -> eframe::Result {
             let mut app = PhotocraftApp::new(session, services);
             // The saved model folder is available after the shell has loaded preferences.
             model_services::configure(&mut app.session);
+            app.prefer_ready_remove_default();
             app.min_frame_ms = uncapped.then_some(1000.0 / 240.0);
             app.integrated_titlebar = cfg!(target_os = "macos");
             app.custom_titlebar = custom_titlebar;

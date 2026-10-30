@@ -26,7 +26,7 @@ fn error(error: osor::Error) -> Error {
     }
 }
 
-fn load(reference: &Reference, backend: OsorBackend) -> Result<(Cached, f64)> {
+fn load(reference: &Reference, backend: OsorBackend, ctl: &dyn RemovalControl) -> Result<(Cached, f64)> {
     let identity = serde_json::to_vec(&reference.manifest).map_err(|e| Error::Integrity(e.to_string()))?;
     let backend_key = format!("{backend:?}");
     let old = crate::cache::take_osor();
@@ -36,6 +36,8 @@ fn load(reference: &Reference, backend: OsorBackend) -> Result<(Cached, f64)> {
         }
         drop(old);
     }
+    check(ctl)?;
+    ctl.progress(0.08, "Loading local OSOR model");
     let start = Instant::now();
     let model = Osor::load_with_options_and_manifest_sha256_and_limits(
         &reference.path,
@@ -65,8 +67,7 @@ pub(crate) fn infer(
     ctl: &dyn RemovalControl,
 ) -> Result<(RemovalOutput, crate::ExecutionInfo)> {
     check(ctl)?;
-    ctl.progress(0.08, "Loading local OSOR model");
-    let (cached, load_ms) = load(reference, backend)?;
+    let (cached, load_ms) = load(reference, backend, ctl)?;
     let result = forward(&cached.model, input, ctl);
     // Metal may enqueue device work. Drain it even if a stage observer cancels or fails;
     // admission and the model remain owned until synchronization completes.

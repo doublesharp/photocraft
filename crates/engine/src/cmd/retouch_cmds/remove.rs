@@ -282,7 +282,7 @@ fn fill_to_new_layer(doc: &mut Document, id: Option<LayerId>, out: &Region, hole
 pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     let method = smart::decide(s, p)?;
     let mut params = p.clone();
-    if matches!(method, smart::Method::Hybrid) {
+    if matches!(method, smart::Method::Hybrid) && params.get("preview").is_none() {
         params["preview"] = json!(true);
     }
     let p = &params;

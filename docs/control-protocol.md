@@ -15,7 +15,11 @@ only; it extends edits into the bounded context crop within the selection.
 These settings do not install models or enable local AI processing; use the explicit preferences
 and model commands described in [Local AI Remove](generative-remove.md).
 
-The Remove UI requests a preview for OSOR and Recommended Auto before committing.
+The Remove UI applies ordinary LaMa, OSOR and Recommended Auto repairs immediately
+as one Undo step. Shadows/reflections retain explicit preview and Apply/Cancel.
+Recommended Auto engine requests without `preview` retain their preview default;
+`preview:false` explicitly commits ordinary hole-only repairs and is refused for
+expanded effects. Existing hybrid action/script restrictions remain unchanged.
 `ui.inspect.remove` also reports `workflow`, `setupComplete` and the current `repairType`.
 Each queued stroke retains its repair type; changing hints can build a mixed regional batch. `ui.inspect.remove.preview` exposes
 its readiness and candidate ID; the canvas shows that exact candidate. Engine clients request
@@ -776,6 +780,14 @@ and expands the panel, including when another tab is selected. Workspace snapsho
 retain custom collapse settings and Timeline visibility.
 
 ### Local AI Content-Aware Fill
+
+Workspace method switches retain one completed, source-valid LaMa candidate while
+Classical is shown. Returning to `method:"ai"` restores it without inference.
+Inspection's `previewId` names the selected AI result (null for Classical), while
+`retainedAiPreviewId` also exposes its ID during Classical comparison. Fill/input
+changes invalidate it; an in-progress model operation is cancelled on a switch.
+Apply follows the selected method. Closing the workspace or opening Models
+releases its retained candidate.
 
 The workspace accepts `edit.contentAwareFill {"ui":{"method":"ai","waitPreview":true}}`.
 Use `method:"classical"` for sampling-brush and adaptation controls. AI selection

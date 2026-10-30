@@ -174,3 +174,38 @@ fn real_lama_gpu_budget_falls_back_and_recovers() {
     assert!(service.last_execution().is_none());
     service.remove("lama").unwrap();
 }
+
+#[test]
+#[ignore = "requires explicitly supplied pinned LaMa weights and a real-model memory window"]
+fn real_lama_padding_does_not_reveal_removed_pixels() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let source = PathBuf::from(std::env::var_os("PHOTOCRAFT_ML_LAMA").expect("supply the existing pinned LaMa weights"));
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("models");
+    RemovalService::new(Some(root.clone())).import("lama", &source, &NoopControl).unwrap();
+    for backend in [OnnxBackend::Cpu, OnnxBackend::Metal] {
+        let service = RemovalService::new(Some(root.clone())).with_onnx_backend(backend);
+        let mut input = RemovalInput { width: 32, height: 16, rgb: vec![0.25; 32 * 16 * 3], mask: vec![0.; 32 * 16] };
+        for y in 4..12 {
+            for x in 12..20 {
+                input.mask[y * 32 + x] = 1.;
+            }
+        }
+        let before = service.infer("lama", &input, &NoopControl).unwrap();
+        for (i, coverage) in input.mask.iter().enumerate() {
+            if *coverage > 0. {
+                input.rgb[i * 3..(i + 1) * 3].fill(1.);
+            }
+        }
+        let after = service.infer("lama", &input, &NoopControl).unwrap();
+        let execution = service.last_execution().unwrap();
+        assert_eq!(execution.uses_gpu, backend == OnnxBackend::Metal);
+        assert_eq!(after.load_ms, 0., "the second repair should reuse the model");
+        let difference = compare(&before.rgb, &after.rgb);
+        println!(
+            "{}",
+            serde_json::json!({"backend":backend,"execution":execution,"maskedSourceDifference":difference,
+            "coldLoadMs":before.load_ms,"coldForwardMs":before.forward_ms,"warmForwardMs":after.forward_ms})
+        );
+    }
+}

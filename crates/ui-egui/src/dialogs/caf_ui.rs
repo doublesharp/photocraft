@@ -292,8 +292,10 @@ impl CafWorkspace {
             "sampledProxyPixels": sampled,
             "proxyScale": self.k,
             "settings": self.opts.to_json(),
-            "previewReady": (self.preview.tex.is_some() || self.ai.id.is_some()) && self.preview.shown == self.preview.want,
-            "previewId": self.ai.id,
+            "previewReady": (self.preview.tex.is_some() || self.preview.pending_image.is_some() || (self.opts.method == "ai" && self.ai.id.is_some()))
+                && self.preview.shown == self.preview.want && self.preview.error.is_none(),
+            "previewId": if self.opts.method == "ai" { self.ai.id } else { None },
+            "retainedAiPreviewId": self.ai.id,
             "applied": self.ai.applied,
             "previewJob": self.ai.job.map(|(_, id)| id.0),
             "previewError": self.preview.error,

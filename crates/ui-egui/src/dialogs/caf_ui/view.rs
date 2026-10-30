@@ -128,14 +128,8 @@ fn caf_props_panel(
     ui.spacing_mut().item_spacing.y = 6.0;
     ui.horizontal(|ui| {
         ui.label(tl!("Method"));
-        widgets::dropdown(
-            ui,
-            "caf-method",
-            tl!("Method"),
-            &mut w.opts.method,
-            &[("ai".to_string(), tl!("LaMa (AI)")), ("classical".to_string(), tl!("Classical"))],
-            160.0,
-        );
+        ui.selectable_value(&mut w.opts.method, "classical".to_string(), tl!("Classical"));
+        ui.selectable_value(&mut w.opts.method, "ai".to_string(), tl!("LaMa (AI)"));
     });
     if widgets::secondary_button(ui, tl!("Models…"), 110.0).clicked() {
         *models = true;
@@ -252,7 +246,9 @@ fn caf_props_panel(
 fn caf_preview_panel(ui: &mut egui::Ui, painter: &egui::Painter, t: &Tokens, w: &mut CafWorkspace, pv_rect: ERect) {
     painter.rect_filled(pv_rect, 0.0, t.dock);
     painter.line_segment([pv_rect.left_top(), pv_rect.left_bottom()], Stroke::new(1.0, t.separator));
-    painter.text(pv_rect.left_top() + vec2(12.0, 10.0), Align2::LEFT_TOP, tl!("Preview"), FontId::proportional(12.0), t.text);
+    let method = if w.opts.method == "ai" { tl!("LaMa (AI)") } else { tl!("Classical") };
+    let title = format!("{}: {method}", tl!("Preview"));
+    painter.text(pv_rect.left_top() + vec2(12.0, 10.0), Align2::LEFT_TOP, title, FontId::proportional(12.0), t.text);
     let pv_area = ERect::from_min_max(pv_rect.min + vec2(0.0, 30.0), pv_rect.max - vec2(0.0, 44.0));
     painter.rect_filled(pv_area, 0.0, t.canvas);
     if w.preview.zoom <= 0.0 {

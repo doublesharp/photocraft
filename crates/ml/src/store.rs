@@ -18,6 +18,10 @@ use crate::{Error, ModelDownloader, ModelSpec, ModelStatus, RemovalBackend, Remo
 use capability::{Partial, Quarantine, StoreDir, same_file};
 use sha2::{Digest, Sha256};
 
+fn hex_digest(digest: impl AsRef<[u8]>) -> String {
+    digest.as_ref().iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Fingerprint {
     bytes: u64,
@@ -568,7 +572,7 @@ fn verify_pinned_reader(
     if bytes != expected_bytes {
         return Err(Error::Integrity(format!("expected {expected_bytes} model bytes, received {bytes}")));
     }
-    let digest = format!("{:x}", sha.finalize());
+    let digest = hex_digest(sha.finalize());
     if digest != expected_sha256 {
         return Err(Error::Integrity("SHA-256 does not match the pinned model; the previous install is unchanged".into()));
     }

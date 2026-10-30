@@ -8,8 +8,9 @@ The fill-area lasso and output choices remain available with either method.
 LaMa shares Remove's installed model, explicit local-processing opt-in, model
 manager, memory allowance and five-minute idle cache. Opening the workspace or
 painting a selection never downloads a model. Models… opens the existing setup
-and management controls. A ready, enabled LaMa installation is proposed for a new
-workspace; saved method choices are preserved where the document supports them.
+and management controls. A ready, enabled LaMa installation is selected for each new
+workspace. Classical remains an explicit choice within that workspace; its sampling
+and adaptation settings are remembered. Unsupported contexts use Classical.
 
 AI fill supports RGB 8/16-bit sRGB raster contexts with opaque known surroundings.
 Sample All Layers can supply opaque surroundings for an empty target. The image
@@ -24,6 +25,23 @@ outside the fill area. Cancel releases the candidate; a noninterruptible LaMa
 forward drains before its memory reservation is released. Changing the fill area
 supersedes the old preview. Overlay, zoom and unrelated brush/view changes reuse
 the same result.
+
+## Compare repairs
+
+The two Method choices, **Classical** and **LaMa (AI)**, are directly visible.
+The original stays on the left and the preview title identifies the method on
+the right. Switch between them to inspect texture and edges at the same zoom.
+
+A completed LaMa result is retained while you inspect Classical. Returning to
+LaMa restores those exact pixels without another inference run. A Classical
+sampling error does not discard the retained LaMa result. Classical-only sampling
+and adaptation settings are remembered without becoming AI inputs.
+
+Changing the fill area, output, sampled layers, source or relevant model settings
+invalidates the AI candidate. Switching away during an unfinished AI operation
+cancels it instead of retaining a partial result. Apply uses the currently chosen
+method. Cancel, closing the workspace or opening Models releases the retained
+candidate. Comparison itself changes neither the document nor its history.
 
 ## Automation
 
@@ -41,7 +59,10 @@ fill parameters. `preview:false` runs and commits the explicit AI command direct
 
 The Content-Aware Fill workspace exposes `method:"ai"|"classical"` through its
 existing `ui` control object. Classical-only sampling inputs are rejected in AI
-mode. The shared model-management commands remain explicit setup actions.
+mode. The shared model-management commands remain explicit setup actions. The workspace
+reports `previewId` only when its AI preview is selected, and
+`retainedAiPreviewId` also while viewing Classical. `previewReady` describes the
+currently displayed method, including a computed image awaiting texture upload.
 
 LaMa fills from image context. Prompted Generative Fill/Expand, broad visual-quality
 qualification, other native platforms and learned browser execution remain
@@ -66,3 +87,18 @@ images at 1280×900 and 1000×700 were inspected with all controls visible.
 These checks used retained weights and a private profile. They do not establish
 fresh-install download/preparation, broad image quality, other native platforms,
 signed packaging or full-size performance budgets.
+
+
+On 2026-10-29, the comparison workspace passed 35 focused UI checks. The complete
+UI crate passed 4,292 library and 134 integration tests serially (22 ignored).
+An initial parallel run had one Window-menu structure-key failure; that test
+passed in isolation, and the retained pre-change executable passed its parallel
+suite. No menu-code correction is claimed.
+
+An isolated native macOS build compared both methods on three fixed public-domain
+photo crops with synthetic holes: forest texture, a dam wall and a thin line.
+LaMa ran on Metal. Method switches preserved the source and the exact LaMa
+candidate; Apply preserved every outside-mask pixel and Undo restored each input
+for both methods. Large and small native screenshots were inspected. These
+three reconstruction cases establish workflow and preservation behavior, not
+captured object-removal quality, a universal winning method or a speed budget.

@@ -118,10 +118,13 @@ pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
         return Err(bad(CMD, "frozen regional metadata requires the recommended Auto workflow"));
     }
     let profile_ai = method == "auto" && matches!(configured, "recommended" | "lama" | "compact");
-    let preview = hybrid || p.get("preview").and_then(Value::as_bool) == Some(true);
+    let preview = p.get("preview").and_then(Value::as_bool).unwrap_or(hybrid);
     let effects = p.get("removeEffects").and_then(Value::as_bool) == Some(true);
     if preview && method != "ai" && !profile_ai {
         return Err(bad(CMD, "Remove previews require the explicit ai method"));
+    }
+    if effects && hybrid && !preview {
+        return Err(bad(CMD, "effect removal requires an OSOR-SDXL preview"));
     }
     if effects
         && !hybrid
@@ -129,7 +132,7 @@ pub(super) fn validate(s: &Session, p: &Value) -> Result<()> {
     {
         return Err(bad(CMD, "effect removal requires an OSOR-SDXL preview"));
     }
-    if preview && (s.actions.playing > 0 || s.actions.script_depth > 0) {
+    if (preview || hybrid) && (s.actions.playing > 0 || s.actions.script_depth > 0) {
         return Err(bad(CMD, "Remove previews require explicit review and are unavailable during action or script playback"));
     }
     if preview && s.active().is_some_and(|st| crate::float_cmds::floating(st).is_some()) {

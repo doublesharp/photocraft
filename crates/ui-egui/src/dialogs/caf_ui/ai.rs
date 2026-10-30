@@ -8,6 +8,7 @@ pub(super) struct State {
     pub(super) id: Option<u64>,
     params: Option<Value>,
     pub(super) applied: bool,
+    visible: bool,
     applied_context: Option<(u64, u64)>,
 }
 
@@ -76,6 +77,36 @@ pub(super) fn clear(app: &mut PhotocraftApp) {
     }
 }
 
+/// A completed candidate can outlive a switch to Classical, but not changed AI inputs
+/// or engine context. Its original admission remains owned until Apply, Cancel or invalidation.
+fn current_candidate(app: &PhotocraftApp) -> Option<u64> {
+    let w = app.distort.caf.as_ref()?;
+    let id = w.ai.id?;
+    if w.ai.params.as_ref() != Some(&super::preview::ai_params(w)) {
+        return None;
+    }
+    let status = app.session.fill_preview_status();
+    (status.get("ready").and_then(Value::as_bool) == Some(true) && status.get("id").and_then(Value::as_u64) == Some(id)).then_some(id)
+}
+
+/// Compare Classical with a finished AI result without starting another neural operation.
+/// A pending forward is still cancelled and drained; only a completed exact candidate is kept.
+pub(super) fn pause(app: &mut PhotocraftApp) {
+    if current_candidate(app).is_none() || app.distort.caf.as_ref().is_some_and(|w| w.ai.job.is_some() || w.ai.applied) {
+        clear(app);
+        return;
+    }
+    if let Some(w) = app.distort.caf.as_mut()
+        && w.ai.visible
+    {
+        w.ai.visible = false;
+        w.preview.tex = None;
+        w.preview.pending_image = None;
+        w.preview.error = None;
+        w.preview.shown = 0;
+    }
+}
+
 fn image(app: &PhotocraftApp, id: u64) -> Result<(Rect, egui::ColorImage), String> {
     let w = app.distort.caf.as_ref().ok_or("Content-Aware Fill is not open")?;
     let (doc, current) = app.session.fill_preview_document().ok_or("the fill preview is stale; generate a new preview")?;
@@ -111,6 +142,7 @@ fn completed(app: &mut PhotocraftApp, generation: u64, result: Result<Value, Str
     let rendered = image(app, id);
     if let Some(w) = app.distort.caf.as_mut() {
         w.ai.id = Some(id);
+        w.ai.visible = true;
         w.preview.finish(generation, rendered);
     }
 }
@@ -123,10 +155,19 @@ fn reconcile(app: &mut PhotocraftApp) {
     let status = app.session.fill_preview_status();
     let ready = status.get("ready").and_then(Value::as_bool) == Some(true);
     let id = status.get("id").and_then(Value::as_u64);
-    let owned_current = same && ready && id == w.ai.id && id.is_some();
+    let owned_current = current_candidate(app);
+    let restore = owned_current.filter(|_| !w.ai.visible);
     let context = app.session.active().map(|st| (st.doc.id.0, st.revision));
     let applied_current = w.ai.applied && context == w.ai.applied_context;
-    if owned_current || (same && applied_current) {
+    if let Some(id) = restore {
+        let rendered = image(app, id);
+        if let Some(w) = app.distort.caf.as_mut() {
+            w.ai.visible = true;
+            w.preview.finish(w.preview.want, rendered);
+        }
+        return;
+    }
+    if owned_current.is_some() || (same && applied_current) {
         if let Some(w) = app.distort.caf.as_mut() {
             w.preview.shown = w.preview.want;
         }

@@ -3871,3 +3871,28 @@ fn smart_fill_preview_damage_is_bounded_by_changed_tiles() {
 fn removal_preview_damage_is_bounded_by_changed_tiles() {
     assert_preview_damage_is_bounded(false);
 }
+
+#[test]
+fn ordinary_remove_immediate_hybrid_is_one_edit_and_effects_still_require_review() {
+    let _guard = lock_ai_tests();
+    for depth in [8, 16] {
+        let mut s = session(128, 128, depth, "rgb");
+        paint_layer(&mut s, |_, _| [0.5, 0.5, 0.5, 1.]);
+        enable_regional_removal(&mut s, "recommended");
+        let before = s.active().unwrap().doc.clone();
+        let history = s.active().unwrap().history.past_len();
+        let p = json!({"method":"auto","preview":false,"size":8,"points":[[64,64]],"repairType":"object"});
+        let result = s.execute("paint.remove", p.clone()).unwrap();
+        assert!(result.get("previewId").is_none(), "ordinary explicit immediate removal must not open a review");
+        assert_eq!(result["preview"], false);
+        assert!(s.removal_preview_document().is_none());
+        assert_eq!(s.active().unwrap().history.past_len(), history + 1);
+        assert_ne!(s.active().unwrap().doc, before);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.active().unwrap().doc, before);
+        let mut effects = p;
+        effects["removeEffects"] = json!(true);
+        assert!(s.execute("paint.remove", effects).is_err(), "expanded effect removal must retain review");
+        assert_eq!(s.active().unwrap().doc, before);
+    }
+}

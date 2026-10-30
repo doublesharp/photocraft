@@ -865,7 +865,7 @@ fn osor_receipt_fixture(path: &Path) {
         fs::write(path.join(name), bytes).unwrap();
     }
     let provenance = SourceProvenance { repository: "https://example.invalid/source".into(), revision: "1".repeat(40), license: "fixture-only".into() };
-    let digest = |name| format!("{:x}", Sha256::digest(fs::read(path.join(name)).unwrap()));
+    let digest = |name| hex_digest(Sha256::digest(fs::read(path.join(name)).unwrap()));
     let manifest = Manifest {
         schema_version: 1,
         upstream_revision: osor::UPSTREAM_REVISION.into(),
@@ -901,7 +901,7 @@ fn osor_reference_import_pins_local_bytes_without_copying_or_deleting_weights() 
     let entries = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name()).collect::<Vec<_>>();
     assert_eq!(entries, ["osor-sdxl-reference.json"]);
     let pinned = service.model_sha256("osor-sdxl").unwrap();
-    assert_eq!(pinned, format!("{:x}", Sha256::digest(fs::read(source.join("manifest.json")).unwrap())));
+    assert_eq!(pinned, hex_digest(Sha256::digest(fs::read(source.join("manifest.json")).unwrap())));
     service.import("osor-sdxl", &source, &NoopControl).unwrap();
     let reloaded = RemovalService::new(Some(root));
     let status = reloaded.status().into_iter().find(|s| s.id == "osor-sdxl").unwrap();
@@ -1647,3 +1647,122 @@ fn failed_inference_does_not_report_a_previous_gpu_completion() {
 #[cfg(all(feature = "native-inference", target_os = "macos"))]
 #[path = "metal_qualification.rs"]
 mod metal_qualification;
+
+#[cfg(all(feature = "osor", unix))]
+#[test]
+fn osor_unchanged_bundle_reuses_verification_until_files_or_receipt_change() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    struct HashProgress(std::sync::atomic::AtomicUsize);
+    impl RemovalControl for HashProgress {
+        fn cancelled(&self) -> bool {
+            false
+        }
+        fn progress(&self, _: f32, message: &str) {
+            if message == "Reverifying local OSOR bundle" {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("bundle");
+    osor_receipt_fixture(&source);
+    let root = temp.path().join("models");
+    let service = NativeService::new(Some(root.clone()));
+    let model = crate::catalog::find("osor-sdxl").unwrap();
+    service.import(model, &source, &NoopControl).unwrap();
+    let progress = HashProgress(std::sync::atomic::AtomicUsize::new(0));
+    osor_reference::verify(&service, &progress).unwrap();
+    assert_eq!(progress.0.swap(0, Ordering::Relaxed), 0, "unchanged, just-imported bytes must not be hashed a second time");
+    let restarted = NativeService::new(Some(root.clone()));
+    osor_reference::verify(&restarted, &progress).unwrap();
+    assert!(progress.0.swap(0, Ordering::Relaxed) > 0, "restart must hash source bytes before reuse");
+    osor_reference::verify(&restarted, &progress).unwrap();
+    assert_eq!(progress.0.swap(0, Ordering::Relaxed), 0, "consecutive removals must reuse verification");
+    let tensor = source.join("unet.safetensors");
+    let modified = fs::metadata(&tensor).unwrap().modified().unwrap();
+    File::open(&tensor).unwrap().set_modified(modified + std::time::Duration::from_secs(1)).unwrap();
+    osor_reference::verify(&restarted, &progress).unwrap();
+    assert!(progress.0.swap(0, Ordering::Relaxed) > 0, "changed file metadata must trigger verification");
+    let bytes = fs::read(&tensor).unwrap();
+    let modified = fs::metadata(&tensor).unwrap().modified().unwrap();
+    fs::write(&tensor, bytes).unwrap();
+    File::open(&tensor).unwrap().set_modified(modified).unwrap();
+    osor_reference::verify(&restarted, &progress).unwrap();
+    assert!(progress.0.swap(0, Ordering::Relaxed) > 0, "restored mtime and size must not conceal a write from the change stamp");
+    let receipt = root.join(osor_reference::RECEIPT);
+    let mut bytes = fs::read(&receipt).unwrap();
+    bytes.push(b' ');
+    fs::write(receipt, bytes).unwrap();
+    osor_reference::verify(&restarted, &progress).unwrap();
+    assert!(progress.0.swap(0, Ordering::Relaxed) > 0, "changed receipt must trigger verification");
+    osor_reference::verify(&restarted, &progress).unwrap();
+    assert_eq!(progress.0.load(Ordering::Relaxed), 0);
+}
+
+#[cfg(feature = "osor")]
+#[test]
+#[ignore = "requires an explicit existing model store; hashes local OSOR weights without loading tensors"]
+fn real_osor_verification_timing() {
+    let root = PathBuf::from(std::env::var_os("PHOTOCRAFT_ML_OSOR_STORE").expect("supply the existing model store explicitly"));
+    let service = NativeService::new(Some(root));
+    let mut timings = Vec::new();
+    for _ in 0..2 {
+        let start = std::time::Instant::now();
+        let held = osor_reference::verify(&service, &NoopControl).unwrap();
+        timings.push(start.elapsed().as_secs_f64() * 1000.);
+        drop(held);
+    }
+    println!("{}", serde_json::json!({"kind":"OSOR verification only", "milliseconds":timings}));
+}
+
+#[test]
+fn hardware_capable_hash_keeps_the_standard_sha256_digest_format() {
+    assert_eq!(hex_digest(Sha256::digest(b"abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_failed_reopen_drops_verification_and_cached_checks_honor_cancellation() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    struct Cancel;
+    impl RemovalControl for Cancel {
+        fn cancelled(&self) -> bool {
+            true
+        }
+        fn progress(&self, _: f32, _: &str) {}
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("bundle");
+    osor_receipt_fixture(&source);
+    let service = NativeService::new(Some(temp.path().join("models")));
+    service.import(crate::catalog::find("osor-sdxl").unwrap(), &source, &NoopControl).unwrap();
+    assert!(matches!(osor_reference::verify(&service, &Cancel), Err(Error::Cancelled)));
+    fs::remove_file(source.join("unet.safetensors")).unwrap();
+    assert!(osor_reference::verify(&service, &NoopControl).is_err());
+    assert!(service.osor_verified.lock().unwrap().is_none());
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_import_does_not_cache_bytes_changed_by_completion_callback() {
+    struct Rewrite(PathBuf);
+    impl RemovalControl for Rewrite {
+        fn cancelled(&self) -> bool {
+            false
+        }
+        fn progress(&self, fraction: f32, _: &str) {
+            if fraction == 1. {
+                let mut bytes = fs::read(&self.0).unwrap();
+                *bytes.last_mut().unwrap() ^= 1;
+                fs::write(&self.0, bytes).unwrap();
+            }
+        }
+    }
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("bundle");
+    osor_receipt_fixture(&source);
+    let service = NativeService::new(Some(temp.path().join("models")));
+    assert!(service.import(crate::catalog::find("osor-sdxl").unwrap(), &source, &Rewrite(source.join("unet.safetensors"))).is_err());
+    assert!(service.osor_verified.lock().unwrap().is_none());
+}

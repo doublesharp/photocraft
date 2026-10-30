@@ -1262,13 +1262,18 @@ fn osor_effect_choice_survives_state_and_requests_preview() {
 }
 
 #[test]
-fn osor_selected_model_requests_review_even_without_effects() {
+fn ordinary_remove_uses_immediate_apply_for_selected_osor_and_hybrid() {
     let mut app = app();
     app.session.edit_prefs(|p| p.generative_remove.selected_model = "osor-sdxl".into());
     app.ui.tool_options.remove_method = "ai".into();
     let request = removal_request(&app, &app.ui.tool_options);
-    assert_eq!(request["preview"], true);
+    assert!(request.get("preview").is_none());
     assert!(request.get("removeEffects").is_none());
+    app.session.edit_prefs(|p| p.generative_remove.workflow = "recommended".into());
+    app.ui.tool_options.remove_method = "auto".into();
+    assert_eq!(removal_request(&app, &app.ui.tool_options)["preview"], false);
+    app.ui.tool_options.remove_effects = true;
+    assert_eq!(removal_request(&app, &app.ui.tool_options)["preview"], true);
 }
 
 #[test]
@@ -1475,4 +1480,21 @@ fn selection_modifiers_quick_and_object_gestures_intersect_on_shift_option() {
         assert!(selection.sample_channel(30, 30, 0) > 0.5);
         assert!(selection.sample_channel(2, 2, 0) < 0.01, "old selection outside the object must be removed");
     }
+}
+
+#[test]
+fn remove_method_choices_name_both_ai_routes_and_the_selected_model() {
+    let mut app = app();
+    app.session.edit_prefs(|prefs| {
+        prefs.generative_remove.workflow = "recommended".into();
+        prefs.generative_remove.selected_model = "lama".into();
+    });
+    let labels = remove_method_labels(&app.session);
+    assert_eq!(labels[0], "Classical");
+    assert_eq!(labels[1], "AI: Auto (LaMa + OSOR)");
+    assert_eq!(labels[2], "AI: LaMa");
+    app.session.edit_prefs(|prefs| prefs.generative_remove.selected_model = "osor-sdxl".into());
+    assert!(remove_method_labels(&app.session)[2].starts_with("AI: OSOR"));
+    app.session.edit_prefs(|prefs| prefs.generative_remove.workflow = "classical".into());
+    assert_eq!(remove_method_labels(&app.session)[1], "Auto (Classical)");
 }

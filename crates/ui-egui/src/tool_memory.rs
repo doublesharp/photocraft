@@ -28,6 +28,27 @@ pub(crate) fn select(app: &mut PhotocraftApp, tool: Tool) {
     app.ui.tool = tool;
 }
 
+impl PhotocraftApp {
+    /// Prefer the ready, explicitly enabled model over an untouched Remove default.
+    /// Called again by the native shell after it installs the saved model service.
+    pub fn prefer_ready_remove_default(&mut self) {
+        let prefs = &self.session.prefs().generative_remove;
+        if self.ui.tool_options.remove_method != "auto"
+            || self.session.prefs().tool_options.get("remove_method").is_some()
+            || !prefs.setup_complete
+            || !prefs.enabled
+            || prefs.workflow == "classical"
+            || !prefs.enabled_models.iter().any(|id| id == &prefs.selected_model)
+        {
+            return;
+        }
+        let ready = self.session.removal_service().status().iter().any(|status| status.id == prefs.selected_model && status.installed && status.available);
+        if ready {
+            self.ui.tool_options.remove_method = "ai".into();
+        }
+    }
+}
+
 /// Temporary canvas overrides do not change `ui.tool`. Spring-loaded letters and the pen's
 /// eraser end do, so remember the tool they will return to instead. A different explicit choice
 /// (or beginning a type edit) owns the tool and stands, just as in `spring_tools::tick`.
@@ -73,7 +94,14 @@ pub fn persist(app: &mut PhotocraftApp, ctx: &egui::Context) {
         return;
     }
     app.prefs_rt.tool_options = Some(app.ui.tool_options.clone());
-    let now = changed(&app.ui.tool_options);
+    let mut now = changed(&app.ui.tool_options);
+    // Once setup is enabled, Auto is also an explicit choice relative to the AI default.
+    if app.session.prefs().generative_remove.setup_complete && app.session.prefs().generative_remove.enabled {
+        if !now.is_object() {
+            now = json!({});
+        }
+        now["remove_method"] = json!(app.ui.tool_options.remove_method);
+    }
     if app.session.prefs().tool_options != now {
         app.session.prefs.edit(|p| p.tool_options = now);
     }
@@ -194,6 +222,7 @@ pub fn restore(app: &mut PhotocraftApp) {
     } else if !saved.is_null() {
         log::warn!("Preferences: the remembered tool options are not an object; using the defaults");
     }
+    app.prefer_ready_remove_default();
     app.prefs_rt.tool_options = Some(app.ui.tool_options.clone());
     restore_brushes(app);
 }

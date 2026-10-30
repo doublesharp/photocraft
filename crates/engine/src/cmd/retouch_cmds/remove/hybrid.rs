@@ -338,7 +338,7 @@ pub(super) fn work(
         ctx.check()?;
     }
     let result = json!({"effectiveMethod":"hybrid","workflow":"recommended","regionalPlan":frozen,"modelRevisions":revisions,"regionResults":timings,
-        "fallbackReason":Value::Null,"preview":true,"estimatedTransientBytes":admission.transient_bytes,"estimatedWorkingSetBytes":admission.required_bytes,
+        "fallbackReason":Value::Null,"preview":p.get("preview").and_then(Value::as_bool).unwrap_or(true),"estimatedTransientBytes":admission.transient_bytes,"estimatedWorkingSetBytes":admission.required_bytes,
         "memoryBudgetBytes":admission.budget_bytes});
     ctx.check()?;
     Ok(Outcome {
