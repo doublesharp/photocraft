@@ -98,6 +98,22 @@ pub(super) fn profile_summary(status: &Value, workflow: &str) -> ProfileSummary 
     summary
 }
 
+/// Installed data can be offered in setup before it has a shared tool binding.
+/// Only the current setup must also be configured to execute that particular model.
+pub(super) fn configured_model_ready(status: &Value, id: &str) -> bool {
+    !flag(status, "sharedSetupRequired")
+        && model(status, id).is_some_and(|entry| {
+            flag(entry, "installed")
+                && flag(entry, "available")
+                && entry.get("canAttempt").and_then(Value::as_bool) != Some(false)
+                && entry.get("configuredReady").and_then(Value::as_bool) != Some(false)
+        })
+}
+
+pub(super) fn current_profile_ready(status: &Value, workflow: &str) -> bool {
+    profile_summary(status, workflow).ready() && (workflow == "classical" || components(workflow).iter().all(|id| configured_model_ready(status, id)))
+}
+
 fn enough_full_memory(physical_memory: Option<u64>) -> bool {
     physical_memory.is_none_or(|bytes| bytes >= FULL_MEMORY_MIB.saturating_mul(1 << 20))
 }
@@ -198,7 +214,7 @@ fn model_finished(app: &mut PhotocraftApp) {
         return;
     }
     let selected = if runtime.workflow.is_empty() { app.session.prefs().generative_remove.workflow.clone() } else { runtime.workflow.clone() };
-    let ready = status(app).is_ok_and(|status| profile_summary(&status, &selected).ready());
+    let ready = status(app).is_ok_and(|status| current_profile_ready(&status, &selected));
     app.prefs_rt.remove_setup.error = !ready;
     app.prefs_rt.remove_setup.message = if ready {
         tl!("Remove setup is ready. Return to your image to start removing objects.").into()
@@ -277,7 +293,7 @@ fn prompt_once(app: &mut PhotocraftApp) {
     } else if prefs.setup_complete
         && known_profile(&prefs.workflow)
         && prefs.workflow != "classical"
-        && status(app).is_ok_and(|status| !profile_summary(&status, &prefs.workflow).ready())
+        && status(app).is_ok_and(|status| !current_profile_ready(&status, &prefs.workflow))
     {
         open_profile(app, &prefs.workflow);
     }
@@ -543,10 +559,14 @@ fn render(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>
     ui.label(tl!("Choose local models for Remove. Your images stay on this computer. A brush stroke never downloads a model."));
     let mut selected = workflow(f).to_owned();
     let current = &app.session.prefs().generative_remove;
-    let recovering = current.setup_complete && current.workflow == selected && !profile_summary(status, &selected).ready();
+    let recovering = current.setup_complete && current.workflow == selected && !current_profile_ready(status, &selected);
     if recovering && !busy(app) {
         ui.add_space(6.0);
-        ui.label(tl!("Your selected setup is not ready yet. Download the remaining models, or choose another setup below."));
+        if profile_summary(status, &selected).ready() {
+            ui.label(tl!("Your model files are installed. Confirm this setup to use them with shared AI settings. No download is needed."));
+        } else {
+            ui.label(tl!("Your selected setup is not ready yet. Download the remaining models, or choose another setup below."));
+        }
     }
     if !app.prefs_rt.remove_setup.message.is_empty() {
         let color = if app.prefs_rt.remove_setup.error { t.danger } else { t.text_dim };
@@ -1014,6 +1034,34 @@ mod tests {
         model_finished(&mut app);
         assert!(app.prefs_rt.remove_setup.message.contains("setup is ready"));
         assert!(!app.prefs_rt.remove_setup.error);
+    }
+
+    #[test]
+    fn shared_setup_recovery_reuses_installed_weights_without_starting_downloads() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = app();
+        app.run("remove.setup", json!({"workflow":"lama"})).unwrap();
+        let before = app.session.prefs_value();
+        let mut status = ux_status(&["lama"]);
+        status["sharedSetupRequired"] = json!(true);
+        for entry in status["models"].as_array_mut().unwrap() {
+            entry["configuredReady"] = json!(false);
+        }
+        assert!(profile_summary(&status, "lama").ready(), "installed data remains eligible for explicit setup");
+        assert!(!current_profile_ready(&status, "lama"), "the current setup needs its shared binding confirmed");
+        let fields = json!({"workflow":"lama"}).as_object().unwrap().clone();
+        let mut harness = Harness::builder().with_size(egui::vec2(700.0, 900.0)).build_ui_state(
+            |ui, state: &mut (PhotocraftApp, Map<String, Value>, Value)| render(&mut state.0, ui, &mut state.1, &state.2),
+            (app, fields, status),
+        );
+        harness.run_steps(3);
+        harness.get_by_label("Your model files are installed. Confirm this setup to use them with shared AI settings. No download is needed.");
+        assert_eq!(harness.state().1["__download"], false);
+        assert_eq!(confirm_label(&harness.state().1), "Use this setup");
+        assert!(validation(&harness.state().0, &harness.state().1, &harness.state().2).is_ok(), "confirming a local binding needs no download consent");
+        assert_eq!(harness.state().0.session.prefs_value(), before);
+        assert!(!harness.state().0.session.has_jobs());
+        assert!(!busy(&harness.state().0));
     }
 
     #[test]

@@ -10,6 +10,12 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 
 [workspace.dependencies]
+# Shared AI configuration and native job contracts; one source identity for the core.
+craft-ai-core = { git = "https://github.com/storytold/craft-ai-integrations", rev = "60b84aed84a172e2bc7f82fbda4a6ecd4a74d4a9" }
+craft-ai-client = { git = "https://github.com/storytold/craft-ai-integrations", rev = "60b84aed84a172e2bc7f82fbda4a6ecd4a74d4a9" }
+craft-ai-native = { git = "https://github.com/storytold/craft-ai-integrations", rev = "60b84aed84a172e2bc7f82fbda4a6ecd4a74d4a9" }
+craft-ai-engine = { git = "https://github.com/storytold/craft-ai-integrations", rev = "60b84aed84a172e2bc7f82fbda4a6ecd4a74d4a9" }
+craft-ai-features = { git = "https://github.com/storytold/craft-ai-integrations", rev = "60b84aed84a172e2bc7f82fbda4a6ecd4a74d4a9" }
 craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", features = ["serde"] }
 # internal
 photocraft-geom = { path = "crates/geom" }

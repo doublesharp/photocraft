@@ -18,7 +18,7 @@ pub(super) fn readiness(app: &PhotocraftApp) -> Result<(), String> {
         return Err("Enable LaMa in Models… to use local AI fill".into());
     }
     let service = app.session.removal_service();
-    let status = service.status().into_iter().find(|status| status.id == "lama");
+    let status = service.status_for_fill().into_iter().find(|status| status.id == "lama");
     match status {
         Some(status) if status.installed && status.available => {
             photocraft_engine::edit_menu_cmds::validate_ai_smart_fill(&app.session, &json!({"method":"ai"})).map_err(|error| error.to_string())

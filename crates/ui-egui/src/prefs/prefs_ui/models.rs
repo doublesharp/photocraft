@@ -108,7 +108,7 @@ fn select_model(app: &mut PhotocraftApp, id: &str) -> Result<Value, String> {
     let result = configure(
         app,
         vec![
-            ("remove.setup", json!({"workflow":"custom"})),
+            ("remove.setup", json!({"workflow":"custom","modelId":id})),
             ("prefs.set", json!({"path":"generativeRemove.enabled","value":true})),
             ("prefs.set", json!({"path":"generativeRemove.enabledModels","value":ids})),
             ("prefs.set", json!({"path":"generativeRemove.selectedModel","value":id})),
@@ -231,6 +231,7 @@ struct CurrentSetup {
     proposal: String,
     disabled: bool,
     attention: Option<String>,
+    configuration_reason: Option<String>,
     memory_warning: Option<&'static str>,
 }
 
@@ -238,12 +239,13 @@ fn installed_setup(app: &PhotocraftApp, status: &Value) -> CurrentSetup {
     let prefs = &app.session.prefs().generative_remove;
     if prefs.workflow != "custom" {
         let summary = super::remove_setup::profile_summary(status, &prefs.workflow);
+        let configured = super::remove_setup::current_profile_ready(status, &prefs.workflow);
         let disabled = prefs.workflow != "classical"
             && (!prefs.enabled
                 || !super::remove_setup::components(&prefs.workflow).iter().all(|required| prefs.enabled_models.iter().any(|id| id == required)));
         return CurrentSetup {
             label: super::remove_setup::workflow_label(&prefs.workflow).into(),
-            ready: summary.ready() && !disabled,
+            ready: configured && !disabled,
             available: summary.available,
             installed: summary.installed,
             total: summary.total,
@@ -255,6 +257,8 @@ fn installed_setup(app: &PhotocraftApp, status: &Value) -> CurrentSetup {
                 .and_then(Value::as_array)
                 .and_then(|models| models.iter().find(|entry| asset_attention(entry) && used_by_current_setup(app, text(entry, "id"))))
                 .map(|entry| text(entry, "id").into()),
+            configuration_reason: (summary.ready() && !configured)
+                .then(|| shared_configuration_reason(status, super::remove_setup::components(&prefs.workflow))),
             memory_warning: None,
         };
     }
@@ -262,10 +266,11 @@ fn installed_setup(app: &PhotocraftApp, status: &Value) -> CurrentSetup {
     let installed = selected.is_some_and(|model| flag(model, "installed"));
     let available = selected.is_some_and(|model| flag(model, "available"));
     let disabled = !prefs.enabled || !prefs.enabled_models.iter().any(|id| id == &prefs.selected_model);
+    let configured = super::remove_setup::configured_model_ready(status, &prefs.selected_model);
     let selected_label = selected.map(|model| text(model, "label")).filter(|label| !label.is_empty()).unwrap_or(&prefs.selected_model);
     CurrentSetup {
         label: format!("{}: {selected_label}", super::remove_setup::workflow_label("custom")),
-        ready: installed && available && !disabled && selected.is_none_or(|model| model.get("canAttempt").and_then(Value::as_bool) != Some(false)),
+        ready: configured && !disabled,
         available,
         installed: usize::from(installed),
         total: 1,
@@ -273,8 +278,17 @@ fn installed_setup(app: &PhotocraftApp, status: &Value) -> CurrentSetup {
         proposal: profile_for_model(&prefs.selected_model).into(),
         disabled,
         attention: selected.filter(|entry| asset_attention(entry)).map(|_| prefs.selected_model.clone()),
+        configuration_reason: (installed && available && !configured).then(|| shared_configuration_reason(status, &[&prefs.selected_model])),
         memory_warning: None,
     }
+}
+
+fn shared_configuration_reason(status: &Value, ids: &[&str]) -> String {
+    ids.iter()
+        .filter_map(|id| model(status, id))
+        .find_map(|entry| entry.get("configuredReason").and_then(Value::as_str).filter(|reason| !reason.is_empty()))
+        .unwrap_or(tl!("The installed models need a shared AI setup choice."))
+        .to_owned()
 }
 
 fn current_setup(app: &PhotocraftApp, status: &Value) -> CurrentSetup {
@@ -374,6 +388,9 @@ fn render_summary(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String
             ui.label(RichText::new(tl!("Local AI is off or a model required by this setup is disabled.")).color(t.text_dim));
         } else if !current.available {
             ui.label(RichText::new(tl!("This setup is unavailable in this build. Choose another setup.")).color(t.text_dim));
+        } else if let Some(reason) = current.configuration_reason.as_deref() {
+            ui.label(RichText::new(tl!(reason)).color(t.text_dim));
+            ui.label(tl!("Finish setup to confirm the shared AI choice and reuse installed models. No download is needed."));
         } else {
             ui.label(RichText::new(format!("{}: {}/{}", tl!("Models installed"), current.installed, current.total)).color(t.text_dim));
         }
@@ -1025,6 +1042,54 @@ mod tests {
         h.run_steps(3);
         assert!(h.state().app.ui.dialogs.iter().any(|dialog| dialog.fields.get("workflow") == Some(&json!("recommended"))));
         assert!(!h.state().app.session.has_jobs());
+    }
+
+    #[test]
+    fn installed_models_need_shared_setup_confirmation_before_showing_ready() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut state = fixture();
+        state.app.run("remove.setup", json!({"workflow":"lama"})).unwrap();
+        state.status["sharedSetupRequired"] = json!(true);
+        state.status["models"] = json!([{
+            "id":"lama","label":"LaMa","installed":true,"available":true,"canAttempt":true,
+            "configuredReady":false,"configuredReason":"Confirm the shared AI setup to reuse these installed models."
+        }]);
+        assert!(!current_setup(&state.app, &state.status).ready, "installed weights do not establish a shared tool binding");
+        let before = state.app.session.prefs_value();
+        let mut h = Harness::builder()
+            .with_size(vec2(700.0, 650.0))
+            .build_ui_state(|ui, state: &mut ModelUi| render(&mut state.app, ui, &mut state.fields, &state.status), state);
+        h.run_steps(3);
+        h.get_by_label("Setup incomplete");
+        assert!(h.query_by_label("Ready").is_none());
+        h.get_by_label("Finish setup…").click();
+        h.run_steps(3);
+        assert!(h.state().app.ui.dialogs.iter().any(|dialog| dialog.fields.get("workflow") == Some(&json!("lama"))));
+        assert_eq!(h.state().app.session.prefs_value(), before, "opening confirmation changes no settings");
+        assert!(!h.state().app.session.has_jobs(), "binding recovery never starts a download");
+        h.state_mut().status["sharedSetupRequired"] = json!(false);
+        h.state_mut().status["models"][0]["configuredReady"] = json!(true);
+        assert!(current_setup(&h.state().app, &h.state().status).ready);
+    }
+
+    #[test]
+    fn custom_model_readiness_obeys_shared_choice_and_accepts_legacy_metadata() {
+        let mut state = fixture();
+        state.app.session.edit_prefs(|prefs| {
+            prefs.generative_remove.workflow = "custom".into();
+            prefs.generative_remove.setup_complete = true;
+            prefs.generative_remove.enabled = true;
+            prefs.generative_remove.enabled_models = vec!["migan-v1".into()];
+            prefs.generative_remove.selected_model = "migan-v1".into();
+        });
+        state.status["models"][0]["installed"] = json!(true);
+        state.status["models"][0]["canAttempt"] = json!(true);
+        assert!(current_setup(&state.app, &state.status).ready, "older metadata still represents ready installed data");
+        state.status["models"][0]["configuredReady"] = json!(false);
+        assert!(!current_setup(&state.app, &state.status).ready, "a shared choice of another model is authoritative");
+        state.status["models"][0]["configuredReady"] = json!(true);
+        assert!(current_setup(&state.app, &state.status).ready);
+        assert!(!state.app.session.has_jobs());
     }
 
     #[test]

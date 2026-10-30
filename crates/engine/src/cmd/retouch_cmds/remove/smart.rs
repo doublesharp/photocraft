@@ -415,9 +415,10 @@ pub(super) fn admission(plan: &Plan, method: &Method, service: &photocraft_ml::R
         .into_iter()
         .max()
         .unwrap_or(0);
+    let budgeted_transient = service.admitted_transient_bytes(transient_bytes).map_err(|error| bad(CMD, error.to_string()))?;
     let required_bytes = u64::from(memory_mib)
         .checked_mul(1024 * 1024)
-        .and_then(|bytes| bytes.checked_add(transient_bytes))
+        .and_then(|bytes| bytes.checked_add(budgeted_transient))
         .ok_or_else(|| bad(CMD, "AI Remove memory estimate is too large"))?;
     if required_bytes > budget_bytes {
         return Err(bad(

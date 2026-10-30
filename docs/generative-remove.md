@@ -84,7 +84,7 @@ Models use machine-local app data: Application Support on macOS, LOCALAPPDATA on
 
 Default desktop and CLI builds enable `local-ai` and `osor`. LaMa prefers supported Metal operations on macOS, with the same model on CPU when GPU preparation or its memory requirement is unavailable. Some graphs combine GPU and CPU operations. MI-GAN remains on CPU pending separate GPU qualification. OSOR uses Metal/F32 on macOS and CPU/F32 on other native targets. `--no-default-features` omits learned backends; `--features local-ai` selects the smaller ONNX-only runtime. `photocraft-ml` itself has no default inference feature. Builds and ordinary tests require no model files and never download them. Follow Scratch output rules in `AGENTS.md`.
 
-Trusted local CLI run/batch/droplet entry points restore saved removal choices and memory budget. Remote automation receives no implicit file-read or processing opt-in. Engine clients use `remove.setup {workflow,memoryUsageMb?}` to configure only, followed by explicit `ai.models.install {modelId}` commands for downloads. `remove.capabilities` and `ai.models.list` expose the selected workflow, components, preparation estimates, license links and readiness. `ai.models.list.lastExecution` separately reports the completed runtime/device, graph placement when available, and CPU fallback reason. Models shows the last run as GPU, mixed GPU/CPU, or CPU; compiled support alone does not establish GPU execution.
+Trusted local CLI run/batch/droplet entry points restore saved removal choices and memory budget. Remote automation receives no implicit file-read or processing opt-in. Engine clients use `remove.setup {workflow,modelId?,memoryUsageMb?}` to configure only, followed by explicit `ai.models.install {modelId}` commands for downloads. `remove.capabilities` and `ai.models.list` expose the selected workflow, components, preparation estimates, license links and readiness. `ai.models.list.lastExecution` separately reports the completed runtime/device, graph placement when available, and CPU fallback reason. Models shows the last run as GPU, mixed GPU/CPU, or CPU; compiled support alone does not establish GPU execution.
 
 `paint.remove` accepts `method:classical|auto|ai`, optional `modelId`, and `repairType:auto|detail|object` globally or per stroke. Recommended Auto always creates a preview. Explicit `removeEffects:true` requires review. Use `remove.preview.status {}`, then `remove.preview.apply {id?}` or `remove.preview.discard {id?}`; supplying the returned ID binds the action to that exact candidate. Results retain the regional plan and model revisions. Untrusted automation and action/script playback cannot administer models or apply unreviewed hybrid/effects repairs.
 
@@ -104,8 +104,10 @@ The historical `1b299a1d` quick performance gate exited successfully, but marked
 
 New setup strings use English fallback where translations are missing. These checks do not establish Photoshop parity, broad removal quality, signed packaging, or Linux/Windows runtime acceptance. Moebius refinement has no adapter; the prior broad pilot did not justify adding it unconditionally. Prompted Generative Fill/Expand and learned browser execution remain separate work.
 
-The current Cargo package/library is `osor`, using the `v0.1.0` Git tag
-from `doublesharp/osor-rs`, with revision `2b4e7e4d` fixed in `Cargo.lock`.
+The current Cargo package/library is `osor`, pinned to the exact crates.io
+release `=0.1.0` with its registry checksum in `Cargo.lock`. The package records
+source revision `2b4e7e4d` from `doublesharp/osor-rs`; all 40 Rust source files
+and the original dependency manifest match the qualified Git source.
 Its inference implementation and dependency versions are unchanged from the
 previously qualified `94584f64` pin; release metadata, documentation and workflows changed.
 Earlier receipts below retain their original revisions.
@@ -143,3 +145,36 @@ Native AI defaults and model labels were inspected at large and small sizes.
 This is workflow/startup evidence, not broad visual-quality or full-size release
 performance qualification. Engine tests: 2,712 pass; UI: 4,429 serial pass; command
 panic hunt, layering and wasm pass. The tested bundle was installed locally.
+
+## Shared Craft AI integration
+
+Desktop and CLI use `craft-ai-integrations` at immutable revision
+`60b84aed84a172e2bc7f82fbda4a6ecd4a74d4a9`. The shared store owns native
+connections, model-folder registration and the `remove-object` binding. Promptless
+Fill uses a separate `background-repair` role so a Remove choice cannot disable it. The
+shared client performs status, request planning, consent checks and job dispatch.
+PhotoCraft supplies native runners; its engine retains context sampling, masks,
+regional routing, exact candidate application and Undo. Recommended is a single
+shared composite model, LaMa + OSOR, rather than a binding change for each region.
+
+Startup reads shared settings without creating a configuration or downloading
+anything. Existing installations confirm a setup once in Models to register their
+current folder and reuse their weights. A shared choice that this adapter cannot
+run is reported as unavailable; there is no silent model substitution. Explicit
+PhotoCraft setup sets an app override, preserving another app's connections and
+the launcher's existing default. `CRAFT_AI_DIR` isolates the shared configuration
+for portable/headless use and tests. An explicit PhotoCraft profile or portable
+installation keeps its AI store beside its preferences unless `CRAFT_AI_DIR`
+selects a shared store. `PHOTOCRAFT_MODEL_DIR` remains an explicit
+development override for the weight store.
+
+These runners are extension adapters shipped by PhotoCraft, not native models
+already published in the shared catalogue. Their qualified artifact metadata and
+OSOR preparation remain beside the adapters. Shared setup has no general OSOR
+conversion hook, so the existing pinned downloader, verified conversion, receipt
+and capability-based file handling remain responsible for weight materialization.
+No new hosted adapter or hosted consent flow is exposed by this change.
+
+Shared setup writes also require direct user authority: untrusted control/MCP and
+render automation can query readiness and run already configured removal, but
+cannot invoke `remove.setup`, including a setup that needs no download.

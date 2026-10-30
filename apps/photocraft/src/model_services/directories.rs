@@ -19,15 +19,28 @@ impl Platform {
     }
 }
 
+#[cfg(test)]
 pub fn resolve(env: impl Fn(&str) -> Option<OsString>, exe: Option<&Path>, platform: Platform, saved: Option<&Path>) -> Option<PathBuf> {
     resolve_with(env, exe, platform, saved, Path::is_file)
 }
 
-fn resolve_with(
+/// Apply a shared default only after explicit model/profile and portable locations.
+pub fn resolve_with_shared(
     env: impl Fn(&str) -> Option<OsString>,
     exe: Option<&Path>,
     platform: Platform,
     saved: Option<&Path>,
+    shared: Option<&Path>,
+) -> Option<PathBuf> {
+    resolve_shared_with(env, exe, platform, saved, shared, Path::is_file)
+}
+
+fn resolve_shared_with(
+    env: impl Fn(&str) -> Option<OsString>,
+    exe: Option<&Path>,
+    platform: Platform,
+    saved: Option<&Path>,
+    shared: Option<&Path>,
     marker_exists: impl Fn(&Path) -> bool,
 ) -> Option<PathBuf> {
     let path = |key| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
@@ -40,12 +53,13 @@ fn resolve_with(
     if let Some(dir) = path("PHOTOCRAFT_CONFIG_DIR") {
         return Some(dir.join("models"));
     }
-    if let Some(parent) = exe.and_then(Path::parent)
-        && ["portable.txt", "PhotoCraft.portable"].iter().any(|name| marker_exists(&parent.join(name)))
-    {
-        // Retain this path even on read-only media: only an explicit user override may
-        // redirect model installation away from the portable application's directory.
-        return Some(parent.join("PhotoCraftData").join("models"));
+    if let Some(data) = portable_data_dir(exe, marker_exists) {
+        // Keep portable copies self-contained even on read-only media. A shared default
+        // must not redirect an explicit portable installation to the normal user profile.
+        return Some(data.join("models"));
+    }
+    if let Some(shared) = shared.filter(|dir| dir.is_absolute()) {
+        return Some(shared.to_path_buf());
     }
     match platform {
         Platform::Mac => path("HOME").map(|home| home.join("Library/Application Support/Photocraft/models")),
@@ -55,6 +69,40 @@ fn resolve_with(
             .or_else(|| path("HOME").map(|home| home.join(".local/share")))
             .map(|data| data.join("photocraft/models")),
     }
+}
+
+/// An explicit AI directory wins; profiles and portable copies otherwise keep bindings beside
+/// their own preferences. None means the normal suite-wide configuration location.
+pub fn shared_store_path(env: impl Fn(&str) -> Option<OsString>, exe: Option<&Path>) -> Option<PathBuf> {
+    shared_store_path_with(env, exe, Path::is_file)
+}
+
+fn shared_store_path_with(env: impl Fn(&str) -> Option<OsString>, exe: Option<&Path>, marker_exists: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let path = |key| env(key).filter(|value| !value.is_empty()).map(PathBuf::from);
+    if let Some(dir) = path("CRAFT_AI_DIR") {
+        return Some(dir.join("connections.json"));
+    }
+    if let Some(dir) = path("PHOTOCRAFT_CONFIG_DIR") {
+        return Some(dir.join("ai/connections.json"));
+    }
+    portable_data_dir(exe, marker_exists).map(|dir| dir.join("ai/connections.json"))
+}
+
+fn portable_data_dir(exe: Option<&Path>, marker_exists: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    exe.and_then(Path::parent)
+        .filter(|parent| ["portable.txt", "PhotoCraft.portable"].iter().any(|name| marker_exists(&parent.join(name))))
+        .map(|parent| parent.join("PhotoCraftData"))
+}
+
+#[cfg(test)]
+fn resolve_with(
+    env: impl Fn(&str) -> Option<OsString>,
+    exe: Option<&Path>,
+    platform: Platform,
+    saved: Option<&Path>,
+    marker_exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    resolve_shared_with(env, exe, platform, saved, None, marker_exists)
 }
 
 #[cfg(test)]
@@ -124,5 +172,56 @@ mod tests {
             resolve(vars(&[("HOME", "/home/test")]), None, Platform::Mac, Some(Path::new("relative"))),
             Some(PathBuf::from("/home/test/Library/Application Support/Photocraft/models"))
         );
+    }
+    #[test]
+    fn shared_default_cannot_override_explicit_profile_or_portable_models() {
+        let shared = Path::new("/suite/models");
+        let exe = Path::new("/portable/photocraft");
+        let marker = |path: &Path| path == Path::new("/portable/portable.txt");
+        assert_eq!(
+            resolve_shared_with(vars(&[("PHOTOCRAFT_CONFIG_DIR", "/profile")]), Some(exe), Platform::Mac, None, Some(shared), marker),
+            Some(PathBuf::from("/profile/models"))
+        );
+        assert_eq!(
+            resolve_shared_with(vars(&[("HOME", "/home/test")]), Some(exe), Platform::Mac, None, Some(shared), marker),
+            Some(PathBuf::from("/portable/PhotoCraftData/models"))
+        );
+    }
+    #[test]
+    fn shared_default_preserves_explicit_model_and_saved_locations() {
+        let shared = Path::new("/suite/models");
+        assert_eq!(
+            resolve_with_shared(vars(&[("PHOTOCRAFT_MODEL_DIR", "/explicit")]), None, Platform::Mac, Some(Path::new("/saved")), Some(shared)),
+            Some(PathBuf::from("/explicit"))
+        );
+        assert_eq!(resolve_with_shared(vars(&[]), None, Platform::Mac, Some(Path::new("/saved")), Some(shared)), Some(PathBuf::from("/saved")));
+    }
+    #[test]
+    fn ordinary_configuration_uses_the_shared_model_default() {
+        for platform in [Platform::Mac, Platform::Windows, Platform::Xdg] {
+            assert_eq!(
+                resolve_with_shared(vars(&[("HOME", "/home/test"), ("LOCALAPPDATA", "/local")]), None, platform, None, Some(Path::new("/suite/models"))),
+                Some(PathBuf::from("/suite/models"))
+            );
+        }
+    }
+    #[test]
+    fn explicit_ai_directory_wins_over_profile_and_portable_store_paths() {
+        let env = vars(&[("CRAFT_AI_DIR", "/ai"), ("PHOTOCRAFT_CONFIG_DIR", "/profile")]);
+        let marker = |_: &Path| true;
+        assert_eq!(shared_store_path_with(env, Some(Path::new("/portable/photocraft")), marker), Some(PathBuf::from("/ai/connections.json")));
+    }
+    #[test]
+    fn profile_and_portable_stores_stay_beside_their_preferences() {
+        let exe = Path::new("/portable/photocraft");
+        for name in ["portable.txt", "PhotoCraft.portable"] {
+            let marker = |path: &Path| path == Path::new("/portable").join(name);
+            assert_eq!(
+                shared_store_path_with(vars(&[("PHOTOCRAFT_CONFIG_DIR", "/profile")]), Some(exe), marker),
+                Some(PathBuf::from("/profile/ai/connections.json"))
+            );
+            assert_eq!(shared_store_path_with(vars(&[]), Some(exe), marker), Some(PathBuf::from("/portable/PhotoCraftData/ai/connections.json")));
+        }
+        assert_eq!(shared_store_path(vars(&[("CRAFT_AI_DIR", ""), ("PHOTOCRAFT_CONFIG_DIR", "")]), None), None);
     }
 }

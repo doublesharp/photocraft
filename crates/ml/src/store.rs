@@ -166,6 +166,11 @@ impl NativeService {
         *self.downloader.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(downloader);
     }
 
+    pub(crate) fn shared_weights_path(&self, model: &'static ModelSpec) -> Result<PathBuf> {
+        let directory = self.directory.as_ref().ok_or_else(|| Error::Storage("choose a model folder".into()))?;
+        if model.id == "osor-sdxl" { Ok(directory.join("osor-sdxl-reference.json")) } else { Ok(directory.join(Self::file_name(model))) }
+    }
+
     pub fn management_available(&self) -> bool {
         self.directory.is_some()
     }

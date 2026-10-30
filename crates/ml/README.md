@@ -1,5 +1,13 @@
 # Local removal runtime
 
+Desktop and CLI attach `with_shared_ai()`: shared Craft AI owns persistent
+connections/folder registration/tool bindings and validates, starts and polls each
+native job. `configure_shared_setup` is called only by explicit model setup;
+construction and status never rewrite shared configuration. Standalone runtime
+tests can omit the shared client. See `docs/generative-remove.md` for adoption,
+existing-file reuse and the remaining adapter-specific preparation boundary.
+
+
 `photocraft-ml` accepts a bounded encoded-sRGB crop and a white-is-hole mask. The engine owns crop selection, colour conversion, document edits and history. The service accepts only catalog model IDs, pins model bytes and SHA-256, and never downloads during inference. The app injects a storage directory and an optional downloader. Native inference uses `tract-onnx` 0.23.9 behind `native-inference`; wasm reports it unavailable.
 
 The model store opens each directory component without following links and retains directory capabilities for the entire operation. Opens, staging, verification, no-clobber publication, removal and cleanup use those handles; a replaced pathname cannot redirect them outside the held store. File opens reject symlinks and nonregular entries. Directory and file identity checks detect the tested replacement points and interrupted installs clean up their own staged bytes through the held directory. Failed verification, cancellation and stream errors preserve an existing install. Removal moves the selected entry into a randomly named staging directory (mode 0700 on Unix), checks the moved handle, and restores a raced replacement without overwriting another entry; if restoration is impossible, the error names the retained recovery directory. Linux and Windows race behavior still needs native qualification. `management_available` reports whether a directory is configured; it does not probe writability, so a read-only directory is reported when a management operation is attempted.
@@ -147,8 +155,10 @@ The `osor-sdxl` catalog entry is always discoverable. Native `osor` enables the
 `osor` adapter and automatically compiles its Metal backend on macOS; other
 native platforms compile the CPU backend. `osor-metal` remains a compatibility
 feature alias. Desktop and CLI default features include `local-ai` and `osor`.
-The library is pinned to [osor v0.1.0, revision 2b4e7e4d3335d7c5c1391cfcad48026d964f390b](https://github.com/doublesharp/osor-rs/tree/v0.1.0),
-using Candle 0.11.0. Updating it requires renewing the affected loading, conversion
+The library is pinned to [osor 0.1.0](https://crates.io/crates/osor/0.1.0),
+using Candle 0.11.0. The published package records source revision
+`2b4e7e4d3335d7c5c1391cfcad48026d964f390b`; all 40 Rust source files and the
+original dependency manifest match the qualified Git source. Updating it requires renewing the affected loading, conversion
 and inference checks.
 The desktop application's native setup selects Metal on macOS and CPU elsewhere;
 the bare library service defaults to CPU/F32 for OSOR. Applications
@@ -234,8 +244,9 @@ the pinned manifest digest and shared-host timings; this smoke does not establis
 independent-reference accuracy or visual removal quality.
 
 The Cargo package and Rust library are named `osor`; the Git repository remains
-`doublesharp/osor-rs`. PhotoCraft uses the `v0.1.0` Git tag, with revision
-`2b4e7e4d` fixed in `Cargo.lock`. Its inference implementation and dependency
+`doublesharp/osor-rs`. PhotoCraft uses the exact crates.io release `=0.1.0`,
+with its registry checksum fixed in `Cargo.lock` and source revision `2b4e7e4d`
+recorded in the package. Its inference implementation and dependency
 versions are unchanged from the previously qualified `94584f64` pin; release
 metadata, documentation and workflows changed. Earlier receipts below retain
 their original revisions.

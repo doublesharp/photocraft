@@ -3,7 +3,7 @@
 //! nothing. Only explicit engine model-management commands open a connection.
 
 use photocraft_ml::{Error, ModelArtifact, ModelDownloader, ModelSpec, RemovalService};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,12 +13,45 @@ mod directories;
 /// Optional model data is local to this machine, separate from roaming preferences.
 /// PHOTOCRAFT_MODEL_DIR explicitly moves it (including to Scratch for development).
 pub fn model_dir(saved: &str) -> Option<PathBuf> {
+    model_dir_at(saved, shared_store_path().as_deref())
+}
+
+/// Profiles and portable copies isolate shared AI settings unless CRAFT_AI_DIR explicitly
+/// selects another store. The ordinary desktop profile uses the suite's standard location.
+pub fn shared_store_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok();
-    directories::resolve(|k| std::env::var_os(k), exe.as_deref(), directories::Platform::current(), (!saved.is_empty()).then(|| std::path::Path::new(saved)))
+    directories::shared_store_path(|key| std::env::var_os(key), exe.as_deref())
+}
+
+fn model_dir_at(saved: &str, store: Option<&Path>) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok();
+    let shared = match store {
+        Some(path) => RemovalService::shared_model_directory_at(path),
+        None => RemovalService::shared_model_directory(),
+    }
+    .ok()
+    .flatten();
+    directories::resolve_with_shared(
+        |key| std::env::var_os(key),
+        exe.as_deref(),
+        directories::Platform::current(),
+        (!saved.is_empty()).then(|| Path::new(saved)),
+        shared.as_deref(),
+    )
 }
 
 pub fn configure(session: &mut photocraft_engine::Session) {
-    let service = RemovalService::new(model_dir(&session.prefs().generative_remove.model_directory)).with_downloader(Arc::new(HttpsModels::new()));
+    let store = shared_store_path();
+    let models = model_dir(&session.prefs().generative_remove.model_directory);
+    configure_paths(session, models, store);
+}
+
+fn configure_paths(session: &mut photocraft_engine::Session, models: Option<PathBuf>, store: Option<PathBuf>) {
+    let service = RemovalService::new(models).with_downloader(Arc::new(HttpsModels::new()));
+    let service = match store {
+        Some(path) => service.with_shared_ai_at(path),
+        None => service.with_shared_ai(),
+    };
     #[cfg(all(feature = "osor", target_os = "macos"))]
     let service = service.with_osor_backend(photocraft_ml::OsorBackend::Metal { ordinal: 0 });
     session.set_removal_service(Arc::new(service));
@@ -102,6 +135,33 @@ mod tests {
         assert_eq!(session.removal_service().model_directory(), Some(expected.as_path()));
         let status = session.execute("ai.models.list", serde_json::json!({})).unwrap();
         assert_eq!(status["modelDirectory"], serde_json::json!(expected));
+        assert!(!session.has_jobs());
+    }
+    #[test]
+    fn configuring_default_models_does_not_create_or_rewrite_shared_settings() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        struct TestDirectory(PathBuf);
+        impl Drop for TestDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = TestDirectory(std::env::temp_dir().join(format!("photocraft-model-configure-{}-{id}", std::process::id())));
+        std::fs::create_dir(&root.0).unwrap();
+        let store = root.0.join("ai/connections.json");
+        let models = root.0.join("models");
+        let mut session = photocraft_engine::Session::new();
+        configure_paths(&mut session, Some(models.clone()), Some(store.clone()));
+        assert!(!store.exists());
+        assert!(!models.exists());
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        let original = br#"{ "schema_version": 1, "connections": [], "defaults": [], "apps": {} }"#;
+        std::fs::write(&store, original).unwrap();
+        configure_paths(&mut session, Some(models.clone()), Some(store.clone()));
+        session.execute("ai.models.list", serde_json::json!({})).unwrap();
+        assert_eq!(std::fs::read(&store).unwrap(), original);
+        assert!(!models.exists());
         assert!(!session.has_jobs());
     }
     #[test]

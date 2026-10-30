@@ -150,7 +150,7 @@ pub(super) fn preflight(s: &Session, p: &Value) -> Result<()> {
         .map(|m| u64::from(m.memory_mib) * 1024 * 1024)
         .ok_or_else(|| bad(CMD, "LaMa is unavailable"))?;
     let budget = u64::from(s.prefs().performance.memory_usage_mb) * 1024 * 1024;
-    if working.checked_add(transient).is_none_or(|n| n > budget) {
+    if working.checked_add(s.removal_service().admitted_transient_bytes(transient).map_err(error)?).is_none_or(|n| n > budget) {
         return Err(bad(CMD, "LaMa plus Smart Fill image buffers exceed the configured memory allowance"));
     }
     Ok(())
@@ -172,13 +172,13 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let service = s.removal_service();
     let working =
         service.catalog().iter().find(|m| m.id == "lama").map(|m| u64::from(m.memory_mib) * 1024 * 1024).ok_or_else(|| bad(CMD, "LaMa is unavailable"))?;
-    if working.checked_add(transient).is_none_or(|required| required > budget) {
+    if working.checked_add(service.admitted_transient_bytes(transient).map_err(error)?).is_none_or(|required| required > budget) {
         return Err(bad(CMD, "LaMa plus Smart Fill image buffers exceed the configured memory allowance"));
     }
     // Replacing this workspace's previous candidate releases its reservation, while
     // other sessions/Remove candidates remain protected by process-wide admission.
     s.fill_preview = None;
-    let status = service.status().into_iter().find(|st| st.id == "lama").ok_or_else(|| bad(CMD, "LaMa is unavailable"))?;
+    let status = service.status_for_fill().into_iter().find(|st| st.id == "lama").ok_or_else(|| bad(CMD, "LaMa is unavailable"))?;
     if status.busy {
         return Err(bad(CMD, "local AI is busy; wait for its operation or discard its preview"));
     }
@@ -198,7 +198,7 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
         true,
         move |ctx| {
             ctx.check()?;
-            let mut permit = service.admit("lama", transient, budget).map_err(error)?;
+            let mut permit = service.admit_fill(transient, budget).map_err(error)?;
             if service.model_sha256("lama").map_err(error)? != sha {
                 return Err(bad(CMD, "the LaMa model changed before inference"));
             }

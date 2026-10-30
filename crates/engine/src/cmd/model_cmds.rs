@@ -58,8 +58,9 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
                 "licenseUrl":spec.license_url, "artifacts":spec.artifacts,
                 // `available` means this build supports the adapter, so an uninstalled model can be
                 // installed. A size-matching artifact can be attempted but still needs verification.
-                "available":service.model_runtime_available(spec.id), "canAttempt":status.is_some_and(|v| v.available), "autoQualified":false,
+                "available":service.model_runtime_available(spec.id), "canAttempt":service.model_data_available(spec.id), "autoQualified":false,
                 "artifactKind":if spec.id == "osor-sdxl" { "bundle" } else { "file" }, "canDownload":!spec.url.is_empty() || !spec.artifacts.is_empty(),
+                "configuredReady":status.is_some_and(|v| v.available), "configuredReason":status.and_then(|v| v.reason.as_deref()),
                 "installed":status.is_some_and(|v| v.installed), "verified":status.is_some_and(|v| v.verified),
                 "busy":status.is_some_and(|v| v.busy), "reason":status.and_then(|v| v.reason.as_deref()),
                 "enabled":preferences.enabled_models.iter().any(|id| id == spec.id),
@@ -68,6 +69,7 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
         })
         .collect();
     Ok(json!({"runtimeAvailable":runtime, "managementAvailable":service.management_available() && management_allowed(s),
+        "sharedSetupRequired":service.shared_setup_required(), "sharedChoiceLabel":service.shared_choice_label(),
         "modelDirectory":service.model_directory().map(|path| path.to_string_lossy()), "enabled":preferences.enabled, "workflow":preferences.workflow, "setupComplete":preferences.setup_complete,
         "componentIds":workflow_models(&preferences.workflow, &preferences.selected_model), "models":models, "lastExecution":service.last_execution()}))
 }
@@ -86,8 +88,8 @@ fn setup(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "remove.setup";
     refuse_playback(s, CMD)?;
     let object = p.as_object().ok_or_else(|| bad(CMD, "params must be an object"))?;
-    if object.keys().any(|key| !["workflow", "memoryUsageMb"].contains(&key.as_str())) {
-        return Err(bad(CMD, "only workflow and optional memoryUsageMb are accepted; downloads require ai.models.install"));
+    if object.keys().any(|key| !["workflow", "memoryUsageMb", "modelId"].contains(&key.as_str())) {
+        return Err(bad(CMD, "only workflow, optional modelId and memoryUsageMb are accepted; downloads require ai.models.install"));
     }
     let workflow = p
         .get("workflow")
@@ -99,10 +101,13 @@ fn setup(s: &mut Session, p: &Value) -> Result<Value> {
         .get("memoryUsageMb")
         .map(|value| value.as_u64().filter(|n| (256..=1_048_576).contains(n)).ok_or_else(|| bad(CMD, "memoryUsageMb must be within 256..1048576")))
         .transpose()?;
-    let models = workflow_models(&workflow, &s.prefs().generative_remove.selected_model).into_iter().map(str::to_owned).collect::<Vec<_>>();
+    let selected = if p.get("modelId").is_some() { model_id(s, p, CMD)?.to_string() } else { s.prefs().generative_remove.selected_model.clone() };
+    let models = workflow_models(&workflow, &selected).into_iter().map(str::to_owned).collect::<Vec<_>>();
+    s.removal_service().configure_shared_setup(&workflow, &selected).map_err(ml_error)?;
     s.edit_prefs(|prefs| {
         prefs.generative_remove.workflow = workflow.clone();
         prefs.generative_remove.setup_complete = true;
+        prefs.generative_remove.selected_model = selected;
         if workflow != "custom" {
             prefs.generative_remove.enabled = workflow != "classical";
             prefs.generative_remove.enabled_models = models;
@@ -232,7 +237,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec(
             "remove.setup",
             "Set Up Remove",
-            r#"{"workflow":"recommended|lama|compact|classical|custom","memoryUsageMb":u32?} → persist explicit choice; no downloads"#,
+            r#"{"workflow":"recommended|lama|compact|classical|custom","modelId":catalog id?,"memoryUsageMb":u32?} → persist shared native choice; no downloads"#,
             setup,
         ),
         spec("remove.capabilities", "Remove Capabilities", r#"{"modelId":catalog id?} → availability and target requirements"#, capabilities),
