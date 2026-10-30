@@ -79,9 +79,9 @@ The historical `1b299a1d` quick performance gate exited successfully, but marked
 New setup strings use English fallback where translations are missing. These checks do not establish Photoshop parity, broad removal quality, signed packaging, or Linux/Windows runtime acceptance. Moebius refinement has no adapter; the prior broad pilot did not justify adding it unconditionally. Prompted Generative Fill/Expand and learned browser execution remain separate work.
 
 The current Cargo package/library is `osor`, using the `v0.1.0` Git tag
-from `doublesharp/osor-rs`, with revision `cd99c924` fixed in `Cargo.lock`.
-Its Rust source and dependency versions are unchanged from the previously
-qualified `94584f64` pin; only the package version and documentation changed.
+from `doublesharp/osor-rs`, with revision `2b4e7e4d` fixed in `Cargo.lock`.
+Its inference implementation and dependency versions are unchanged from the
+previously qualified `94584f64` pin; release metadata, documentation and workflows changed.
 Earlier receipts below retain their original revisions.
 Initial offline validation seeded the existing Cargo Git cache from the supplied
 local checkout; that remains historical provenance, separate from remote resolution.

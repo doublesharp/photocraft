@@ -141,7 +141,7 @@ The `osor-sdxl` catalog entry is always discoverable. Native `osor` enables the
 `osor` adapter and automatically compiles its Metal backend on macOS; other
 native platforms compile the CPU backend. `osor-metal` remains a compatibility
 feature alias. Desktop and CLI default features include `local-ai` and `osor`.
-The library is pinned to [osor v0.1.0, revision cd99c92464ff36f7026ed80c4f2bec1f10073f84](https://github.com/doublesharp/osor-rs/tree/v0.1.0),
+The library is pinned to [osor v0.1.0, revision 2b4e7e4d3335d7c5c1391cfcad48026d964f390b](https://github.com/doublesharp/osor-rs/tree/v0.1.0),
 using Candle 0.11.0. Updating it requires renewing the affected loading, conversion
 and inference checks.
 The desktop application's native setup selects Metal on macOS and CPU elsewhere;
@@ -219,9 +219,10 @@ independent-reference accuracy or visual removal quality.
 
 The Cargo package and Rust library are named `osor`; the Git repository remains
 `doublesharp/osor-rs`. PhotoCraft uses the `v0.1.0` Git tag, with revision
-`cd99c924` fixed in `Cargo.lock`. Its Rust source and dependency versions are
-unchanged from the previously qualified `94584f64` pin; only the package version
-and documentation changed. Earlier receipts below retain their original revisions.
+`2b4e7e4d` fixed in `Cargo.lock`. Its inference implementation and dependency
+versions are unchanged from the previously qualified `94584f64` pin; release
+metadata, documentation and workflows changed. Earlier receipts below retain
+their original revisions.
 Initial offline validation seeded the existing Cargo Git cache from the supplied local checkout.
 That cache provenance is separate from fresh remote resolution.
 

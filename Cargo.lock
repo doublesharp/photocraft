@@ -5611,7 +5611,7 @@ dependencies = [
 [[package]]
 name = "osor"
 version = "0.1.0"
-source = "git+https://github.com/doublesharp/osor-rs?tag=v0.1.0#cd99c92464ff36f7026ed80c4f2bec1f10073f84"
+source = "git+https://github.com/doublesharp/osor-rs?tag=v0.1.0#2b4e7e4d3335d7c5c1391cfcad48026d964f390b"
 dependencies = [
  "candle-core",
  "candle-metal-kernels",

@@ -43,4 +43,4 @@ same-file = "=1.0.6"
 
 # Immutable source qualified with the native integration; see README before updating.
 [package.metadata.osor-development]
-tested-source-revision = "cd99c92464ff36f7026ed80c4f2bec1f10073f84"
+tested-source-revision = "2b4e7e4d3335d7c5c1391cfcad48026d964f390b"
