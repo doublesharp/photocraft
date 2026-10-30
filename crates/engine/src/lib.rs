@@ -309,3 +309,5 @@ mod tests;
 
 #[cfg(test)]
 mod fx_mode_tests;
+
+pub mod command_hints;
