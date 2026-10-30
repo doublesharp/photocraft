@@ -367,7 +367,10 @@ fn deeply_nested_embedded_svg_is_dropped_not_a_stack_overflow() {
 }
 
 /// The embedded SVG is parsed on top of the drawing's own recursion, so the two depths share
-/// [`svg::MAX_XML_DEPTH`]: 511 + 511 groups, each fine alone, overflowed a 1 MB thread stack.
+/// [`svg::MAX_XML_DEPTH`]: 511 + 511 groups, each fine alone, used to overflow the stack.
+/// Use the same 2 MiB stack as the other embedded-SVG test: even accepted drawings near
+/// the depth cap need more than 1 MiB in optimized macOS builds. The pixel assertions
+/// verify that an over-budget image is dropped and one within the shared budget renders.
 #[test]
 fn an_embedded_svg_gets_only_the_nesting_depth_the_drawing_left() {
     let embed = |outer: usize, inner: usize| {
@@ -375,7 +378,7 @@ fn an_embedded_svg_gets_only_the_nesting_depth_the_drawing_left() {
         format!("<svg {NS} width=\"8\" height=\"8\">{}<image width=\"8\" height=\"8\" href=\"{url}\"/>{}</svg>", "<g>".repeat(outer), "</g>".repeat(outer))
     };
     std::thread::Builder::new()
-        .stack_size(1 << 20)
+        .stack_size(2 << 20)
         .spawn(move || {
             let r = open(&embed(svg::MAX_XML_DEPTH - 1, svg::MAX_XML_DEPTH - 1));
             assert!(px(&r.document, 4, 4)[3] < 0.01, "{:?}", px(&r.document, 4, 4));
