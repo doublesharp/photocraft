@@ -431,13 +431,11 @@ impl NativeService {
             .ensure_attached()
             .and_then(|_| quarantine.ensure_attached())
             .and_then(|_| if quarantine.matches(&file)? { Ok(()) } else { Err(Error::Storage("model file was replaced during removal".into())) });
-        if let Err(error) = validated {
-            return match quarantine.restore(&name) {
-                Ok(()) => Err(error),
-                Err(_) => Err(quarantine.recovery_error(error)),
-            };
-        }
-        if let Err(error) = quarantine.remove_entry() {
+        let removed = validated.and_then(|_| quarantine.remove_entry());
+        // Close both ownership handles before the quarantine's empty-directory cleanup.
+        drop(current);
+        drop(file);
+        if let Err(error) = removed {
             return match quarantine.restore(&name) {
                 Ok(()) => Err(error),
                 Err(_) => Err(quarantine.recovery_error(error)),

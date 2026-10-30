@@ -122,7 +122,10 @@ impl StoreDir {
             .ensure_attached()
             .and_then(|_| quarantine.ensure_attached())
             .and_then(|_| if quarantine.matches(&file)? { Ok(()) } else { Err(Error::Storage("managed OSOR file changed during removal".into())) });
-        if let Err(error) = valid.and_then(|_| quarantine.remove_entry()) {
+        let removed = valid.and_then(|_| quarantine.remove_entry());
+        // A successfully unlinked Windows file stays pending until its held handle closes.
+        drop(file);
+        if let Err(error) = removed {
             return match quarantine.restore(name) {
                 Ok(()) => Err(error),
                 Err(_) => Err(quarantine.recovery_error(error)),
@@ -132,12 +135,15 @@ impl StoreDir {
     }
 
     #[cfg(feature = "osor")]
-    pub(super) fn remove_empty_child(&self, name: &str, expected: &StoreDir) -> Result<()> {
+    pub(super) fn remove_empty_child(&self, name: &str, expected: StoreDir) -> Result<()> {
         self.ensure_attached()?;
         expected.ensure_attached()?;
         if !same_dir(&child_dir(&self.dir, OsStr::new(name))?, &expected.dir)? {
             return Err(Error::Storage("managed OSOR directory was replaced during removal".into()));
         }
+        // Windows directory capabilities deny delete sharing. Finish identity checks
+        // while held, then close the child before removing its empty name via the parent.
+        drop(expected);
         match self.dir.remove_dir(name) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => Ok(()),
@@ -168,15 +174,33 @@ fn random_name(prefix: &str, suffix: &str) -> Result<String> {
     Ok(name)
 }
 
-/// A private, exclusively created bundle workspace. Every file is recorded by its
-/// open identity; cleanup never follows or removes an unrelated replacement.
+/// Runs after the owner's file and directory fields have dropped. Never removes contents:
+/// failed cleanup and unrelated entries leave the directory intact for recovery.
+struct EmptyDirectoryCleanup<'a> {
+    parent: &'a StoreDir,
+    name: String,
+    armed: bool,
+}
+
+impl Drop for EmptyDirectoryCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.parent.dir.remove_dir(&self.name);
+        }
+    }
+}
+
+/// A private, exclusively created bundle workspace. Cleanup checks each file's open
+/// identity, then removes only an empty workspace after closing its held handles.
 #[cfg(feature = "osor")]
 pub(super) struct StagedDirectory<'a> {
     parent: &'a StoreDir,
     pub(super) name: String,
-    pub(super) store: StoreDir,
     owned: Vec<(String, File)>,
+    pub(super) store: StoreDir,
     retained: bool,
+    // Fields drop in declaration order: close files, then the directory, then unlink its name.
+    cleanup: EmptyDirectoryCleanup<'a>,
 }
 
 #[cfg(feature = "osor")]
@@ -199,7 +223,8 @@ impl<'a> StagedDirectory<'a> {
                     let mut parents = parent.parents.iter().map(|(dir, name)| Ok((dir.try_clone()?, name.clone()))).collect::<io::Result<Vec<_>>>()?;
                     parents.push((parent.dir.try_clone()?, name.clone().into()));
                     let store = StoreDir { parents, dir };
-                    let stage = Self { parent, name, store, owned: Vec::new(), retained: false };
+                    let cleanup = EmptyDirectoryCleanup { parent, name: name.clone(), armed: false };
+                    let stage = Self { parent, name, store, owned: Vec::new(), retained: false, cleanup };
                     stage.store.ensure_attached()?;
                     return Ok(stage);
                 }
@@ -292,7 +317,7 @@ impl Drop for StagedDirectory<'_> {
                 let _ = self.store.dir.remove_file(name);
             }
         }
-        let _ = self.parent.dir.remove_dir(&self.name);
+        self.cleanup.armed = true;
     }
 }
 
@@ -364,6 +389,8 @@ pub(super) struct Quarantine<'a> {
     store: &'a StoreDir,
     name: String,
     dir: Dir,
+    // Keep last so the private directory handle closes before the empty-directory unlink.
+    cleanup: EmptyDirectoryCleanup<'a>,
 }
 
 impl<'a> Quarantine<'a> {
@@ -381,7 +408,8 @@ impl<'a> Quarantine<'a> {
             match store.dir.create_dir_with(&name, &builder) {
                 Ok(()) => {
                     let dir = child_dir(&store.dir, OsStr::new(&name))?;
-                    let stage = Self { store, name, dir };
+                    let cleanup = EmptyDirectoryCleanup { parent: store, name: name.clone(), armed: false };
+                    let stage = Self { store, name, dir, cleanup };
                     stage.ensure_attached()?;
                     return Ok(stage);
                 }
@@ -429,9 +457,7 @@ impl<'a> Quarantine<'a> {
 
 impl Drop for Quarantine<'_> {
     fn drop(&mut self) {
-        if self.ensure_attached().is_ok() {
-            // Only an empty directory is removed. Nonempty recovery data is retained.
-            let _ = self.store.dir.remove_dir(&self.name);
-        }
+        // Validate ownership while the handle still prevents replacement on Windows.
+        self.cleanup.armed = self.ensure_attached().is_ok();
     }
 }

@@ -1209,12 +1209,16 @@ mod tests {
         h.run_steps(8);
         let screen = h.ctx.content_rect();
         for label in ["Cancel model operation", "Close"] {
-            let node = h.get_by_label(label);
-            assert!(!node.accesskit_node().is_disabled());
-            assert!(screen.contains_rect(node.rect()), "{label} must remain inside the small window");
+            // Windows/Linux have a title-bar Close as well as the footer button.
+            for node in h.get_all_by_role_and_label(egui::accesskit::Role::Button, label) {
+                assert!(!node.accesskit_node().is_disabled());
+                assert!(screen.contains_rect(node.rect()), "{label} must remain inside the small window");
+            }
         }
-        h.get_by_label("Close").click();
+        // Exercise the footer Close, below the title-bar control on platforms that have both.
+        h.get_all_by_role_and_label(egui::accesskit::Role::Button, "Close").max_by(|a, b| a.rect().center().y.total_cmp(&b.rect().center().y)).unwrap().click();
         h.run_steps(3);
+        assert!(h.state().ui.dialogs.iter().all(|dialog| dialog.fields.get("__prefsui").and_then(Value::as_str) != Some("removeModels")));
         assert!(h.state().session.has_jobs(), "closing the manager leaves the download running");
         let job = h.state().session.jobs().into_iter().next().unwrap().id;
         done.send(()).unwrap();

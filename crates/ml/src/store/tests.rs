@@ -1166,6 +1166,72 @@ fn osor_network_install_requires_memory_admission_before_transport_or_storage() 
     assert!(!transport.0.load(Ordering::Acquire));
 }
 
+#[test]
+fn empty_removal_quarantine_releases_its_directory_handle_before_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("models");
+    let store = StoreDir::acquire(&root, true).unwrap();
+    drop(Quarantine::create(&store).unwrap());
+    assert_eq!(fs::read_dir(root).unwrap().count(), 0);
+}
+
+#[test]
+fn completed_model_removal_cleans_quarantine_and_preserves_unrelated_files() {
+    let _serial = ADMISSION_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("models");
+    let service = NativeService::new(Some(root.clone()));
+    service.publish(&FIXTURE, &mut Cursor::new(b"model"), &NoopControl).unwrap();
+    fs::write(root.join("unrelated"), b"keep").unwrap();
+    service.remove(&FIXTURE).unwrap();
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    assert_eq!(fs::read(root.join("unrelated")).unwrap(), b"keep");
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn osor_staging_cleanup_releases_owned_handles_and_preserves_unowned_entries() {
+    for keep_unrelated in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("models");
+        let store = StoreDir::acquire(&root, true).unwrap();
+        let mut stage = capability::StagedDirectory::create(&store).unwrap();
+        stage.create_file("owned").unwrap().write_all(b"temporary").unwrap();
+        let path = root.join(&stage.name);
+        if keep_unrelated {
+            fs::write(path.join("unrelated"), b"keep").unwrap();
+        }
+        drop(stage);
+        if keep_unrelated {
+            assert_eq!(fs::read_dir(&path).unwrap().count(), 1);
+            assert_eq!(fs::read(path.join("unrelated")).unwrap(), b"keep");
+        } else {
+            assert!(!path.exists(), "all owned file and directory handles must close before removing an empty stage");
+        }
+    }
+}
+
+#[cfg(feature = "osor")]
+#[test]
+fn managed_empty_child_removal_releases_its_handle_and_preserves_unrelated_files() {
+    for keep_unrelated in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("models");
+        let store = StoreDir::acquire(&root, true).unwrap();
+        fs::create_dir(root.join("owned")).unwrap();
+        if keep_unrelated {
+            fs::write(root.join("owned/unrelated"), b"keep").unwrap();
+        }
+        let child = StoreDir::acquire(&root.join("owned"), false).unwrap();
+        store.remove_empty_child("owned", child).unwrap();
+        if keep_unrelated {
+            assert_eq!(fs::read(root.join("owned/unrelated")).unwrap(), b"keep");
+        } else {
+            assert!(!root.join("owned").exists());
+        }
+    }
+}
+
 #[cfg(feature = "osor")]
 #[test]
 fn osor_admitted_install_rejects_failed_transfer_and_leaves_no_install() {

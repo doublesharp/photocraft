@@ -461,7 +461,7 @@ pub(super) fn remove(service: &NativeService) -> Result<()> {
                 }
                 source.remove_regular(LICENSE_FILE)?;
                 source.remove_regular(NOTICE_FILE)?;
-                store.remove_empty_child(name, &source)?;
+                store.remove_empty_child(name, source)?;
             }
             Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
