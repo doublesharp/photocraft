@@ -112,6 +112,14 @@ fn choose(h: &mut Harness<'_, Probe>, font: &str, accept: &str) {
         "arrow-enter" => {
             h.key_press(Key::ArrowDown);
             h.run();
+            // An already-current family remains highlighted after typing its full name.
+            // Down can then select another substring match (Inter also matches SignPainter
+            // on macOS). Return to the intended family before testing acceptance/commit.
+            if h.query_all_by_role(Role::TextInput).next().unwrap().value().as_deref() != Some(font) {
+                h.key_press(Key::ArrowUp);
+                h.run();
+            }
+            assert_eq!(h.query_all_by_role(Role::TextInput).next().unwrap().value().as_deref(), Some(font));
             h.key_press(Key::Enter);
         }
         "click" => h.get_by_label(font).click(),
