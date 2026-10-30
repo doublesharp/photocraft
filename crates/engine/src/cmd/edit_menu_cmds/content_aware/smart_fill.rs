@@ -226,7 +226,7 @@ pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             let own = plan.layer_pixels();
             let mut filled = own.to_vec();
             let keep_alpha = plan.output != "new" && doc.effective_locks(id).transparency;
-            for ((dest, color), hole) in filled.chunks_exact_mut(n).zip(output.rgb.chunks_exact(3)).zip(&plan.hole) {
+            for ((dest, color), hole) in filled.chunks_exact_mut(n).zip(output.rgb.as_chunks::<3>().0.iter()).zip(&plan.hole) {
                 if *hole {
                     if let Some(target) = dest.get_mut(..3) {
                         target.copy_from_slice(color);

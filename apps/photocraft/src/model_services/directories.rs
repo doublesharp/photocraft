@@ -142,10 +142,15 @@ mod tests {
     }
     #[test]
     fn xdg_data_and_home_fallback_are_non_roaming() {
-        assert_eq!(
-            resolve(vars(&[("XDG_DATA_HOME", "/data"), ("HOME", "/home/test")]), None, Platform::Xdg, None),
-            Some(PathBuf::from("/data/photocraft/models"))
-        );
+        // Platform selects the directory policy; Path still uses the host's syntax.
+        let data = std::env::temp_dir().join("photocraft-xdg-data");
+        assert!(data.is_absolute());
+        let env = |key: &str| match key {
+            "XDG_DATA_HOME" => Some(data.clone().into_os_string()),
+            "HOME" => Some(OsString::from("/home/test")),
+            _ => None,
+        };
+        assert_eq!(resolve(env, None, Platform::Xdg, None), Some(data.join("photocraft/models")));
         assert_eq!(
             resolve(vars(&[("XDG_DATA_HOME", "relative"), ("HOME", "/home/test")]), None, Platform::Xdg, None),
             Some(PathBuf::from("/home/test/.local/share/photocraft/models"))
@@ -175,33 +180,39 @@ mod tests {
     }
     #[test]
     fn shared_default_cannot_override_explicit_profile_or_portable_models() {
-        let shared = Path::new("/suite/models");
+        let shared = std::env::temp_dir().join("photocraft-suite-models");
+        assert!(shared.is_absolute());
         let exe = Path::new("/portable/photocraft");
         let marker = |path: &Path| path == Path::new("/portable/portable.txt");
         assert_eq!(
-            resolve_shared_with(vars(&[("PHOTOCRAFT_CONFIG_DIR", "/profile")]), Some(exe), Platform::Mac, None, Some(shared), marker),
+            resolve_shared_with(vars(&[("PHOTOCRAFT_CONFIG_DIR", "/profile")]), Some(exe), Platform::Mac, None, Some(&shared), marker),
             Some(PathBuf::from("/profile/models"))
         );
         assert_eq!(
-            resolve_shared_with(vars(&[("HOME", "/home/test")]), Some(exe), Platform::Mac, None, Some(shared), marker),
+            resolve_shared_with(vars(&[("HOME", "/home/test")]), Some(exe), Platform::Mac, None, Some(&shared), marker),
             Some(PathBuf::from("/portable/PhotoCraftData/models"))
         );
     }
     #[test]
     fn shared_default_preserves_explicit_model_and_saved_locations() {
-        let shared = Path::new("/suite/models");
+        let saved = std::env::temp_dir().join("photocraft-saved-models");
+        assert!(saved.is_absolute());
+        let shared = std::env::temp_dir().join("photocraft-suite-models");
+        assert!(shared.is_absolute());
         assert_eq!(
-            resolve_with_shared(vars(&[("PHOTOCRAFT_MODEL_DIR", "/explicit")]), None, Platform::Mac, Some(Path::new("/saved")), Some(shared)),
+            resolve_with_shared(vars(&[("PHOTOCRAFT_MODEL_DIR", "/explicit")]), None, Platform::Mac, Some(&saved), Some(&shared)),
             Some(PathBuf::from("/explicit"))
         );
-        assert_eq!(resolve_with_shared(vars(&[]), None, Platform::Mac, Some(Path::new("/saved")), Some(shared)), Some(PathBuf::from("/saved")));
+        assert_eq!(resolve_with_shared(vars(&[]), None, Platform::Mac, Some(&saved), Some(&shared)), Some(saved.clone()));
     }
     #[test]
     fn ordinary_configuration_uses_the_shared_model_default() {
+        let shared = std::env::temp_dir().join("photocraft-suite-models");
+        assert!(shared.is_absolute());
         for platform in [Platform::Mac, Platform::Windows, Platform::Xdg] {
             assert_eq!(
-                resolve_with_shared(vars(&[("HOME", "/home/test"), ("LOCALAPPDATA", "/local")]), None, platform, None, Some(Path::new("/suite/models"))),
-                Some(PathBuf::from("/suite/models"))
+                resolve_with_shared(vars(&[("HOME", "/home/test"), ("LOCALAPPDATA", "/local")]), None, platform, None, Some(&shared)),
+                Some(shared.clone())
             );
         }
     }
