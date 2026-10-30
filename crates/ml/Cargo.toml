@@ -27,10 +27,10 @@ tract-onnx = { version = "=0.23.9", optional = true }
 [target.'cfg(all(not(target_arch = "wasm32"), target_os = "macos"))'.dependencies]
 tract-metal = { version = "=0.23.9", optional = true }
 tract-gpu = { version = "=0.23.9", optional = true }
-osor = { git = "https://github.com/doublesharp/osor-rs", rev = "94584f64f2a94cb6228239d45bf0ebb4830ef1df", optional = true, features = ["metal"] }
+osor = { git = "https://github.com/doublesharp/osor-rs", tag = "v0.1.0", optional = true, features = ["metal"] }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))'.dependencies]
-osor = { git = "https://github.com/doublesharp/osor-rs", rev = "94584f64f2a94cb6228239d45bf0ebb4830ef1df", optional = true }
+osor = { git = "https://github.com/doublesharp/osor-rs", tag = "v0.1.0", optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
@@ -43,4 +43,4 @@ same-file = "=1.0.6"
 
 # Immutable source qualified with the native integration; see README before updating.
 [package.metadata.osor-development]
-tested-source-revision = "94584f64f2a94cb6228239d45bf0ebb4830ef1df"
+tested-source-revision = "cd99c92464ff36f7026ed80c4f2bec1f10073f84"

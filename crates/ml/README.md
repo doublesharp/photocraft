@@ -88,7 +88,7 @@ downloaded model removes its fixed owned bundle files and receipt; imported
 external bundles retain their original weights.
 
 The mirror's fixed prompt is F32 and differs numerically from the earlier local
-F16-export qualification. On 2026-10-28, published osor-rs v0.2.0 (`1b299a1d`)
+F16-export qualification. On 2026-10-28, osor-rs development revision `1b299a1d`
 replayed the retained managed bundle on Metal/F32 against the frozen independent
 PyTorch/MPS reference for one 704×368 photo. The original mask and both captured
 noise tensors were reused; all 18 stages passed the unchanged frozen limits.
@@ -105,7 +105,7 @@ procedural 256×192 image passed unrelated preference/brush/view writes during O
 preview source preservation, Escape discard and main-view recovery, Enter Apply,
 exact PNG Undo, warm in-flight cancellation, admission drain, a successful next
 removal and clean private-process exit. Full model preparation and application HTTPS
-transfer were not rerun for v0.2.0; the 66.14-second preparation and 24 MP release
+transfer were not rerun for `1b299a1d`; the 66.14-second preparation and 24 MP release
 measurements in the application documentation remain historical `f9d4b2f9` results.
 
 The ignored
@@ -141,7 +141,7 @@ The `osor-sdxl` catalog entry is always discoverable. Native `osor` enables the
 `osor` adapter and automatically compiles its Metal backend on macOS; other
 native platforms compile the CPU backend. `osor-metal` remains a compatibility
 feature alias. Desktop and CLI default features include `local-ai` and `osor`.
-The library is pinned to [osor v0.2.0, revision 94584f64f2a94cb6228239d45bf0ebb4830ef1df](https://github.com/doublesharp/osor-rs/tree/94584f64f2a94cb6228239d45bf0ebb4830ef1df),
+The library is pinned to [osor v0.1.0, revision cd99c92464ff36f7026ed80c4f2bec1f10073f84](https://github.com/doublesharp/osor-rs/tree/v0.1.0),
 using Candle 0.11.0. Updating it requires renewing the affected loading, conversion
 and inference checks.
 The desktop application's native setup selects Metal on macOS and CPU elsewhere;
@@ -218,9 +218,11 @@ the pinned manifest digest and shared-host timings; this smoke does not establis
 independent-reference accuracy or visual removal quality.
 
 The Cargo package and Rust library are named `osor`; the Git repository remains
-`doublesharp/osor-rs`. Revision `94584f64` is published. PhotoCraft keeps this
-immutable dependency pin when upstream main changes. Initial offline
-validation seeded the existing Cargo Git cache from the supplied local checkout.
+`doublesharp/osor-rs`. PhotoCraft uses the `v0.1.0` Git tag, with revision
+`cd99c924` fixed in `Cargo.lock`. Its Rust source and dependency versions are
+unchanged from the previously qualified `94584f64` pin; only the package version
+and documentation changed. Earlier receipts below retain their original revisions.
+Initial offline validation seeded the existing Cargo Git cache from the supplied local checkout.
 That cache provenance is separate from fresh remote resolution.
 
 On 2026-10-28, the `94584f64` CLI replayed the retained 704×368 scene on Metal/F32

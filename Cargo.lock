@@ -5610,8 +5610,8 @@ dependencies = [
 
 [[package]]
 name = "osor"
-version = "0.2.0"
-source = "git+https://github.com/doublesharp/osor-rs?rev=94584f64f2a94cb6228239d45bf0ebb4830ef1df#94584f64f2a94cb6228239d45bf0ebb4830ef1df"
+version = "0.1.0"
+source = "git+https://github.com/doublesharp/osor-rs?tag=v0.1.0#cd99c92464ff36f7026ed80c4f2bec1f10073f84"
 dependencies = [
  "candle-core",
  "candle-metal-kernels",
